@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import brain, data as data_mod, llm, voice
+from agent import brain, data as data_mod, llm, memory, voice
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -107,10 +107,12 @@ def capabilities() -> dict[str, object]:
             "speak": {"available": True, "engine": "browser"},
             "language": data_mod.language() or None,
         },
-        # Step 5 wires the rest. Declared so the UI can grey what it must
-        # instead of pretending a dead button works.
-        "stage": 4,
-        "stage_note": "graph, search, conversation and voice — memory is not wired yet",
+        "memory": {
+            "facts": len(memory.facts()),
+            "limit": memory.MAX_FACTS,
+        },
+        "stage": 5,
+        "stage_note": "",
     }
 
 
@@ -276,6 +278,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/listen":
                 self._listen()
                 return
+            if route == "/api/forget":
+                self._forget()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -308,6 +313,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._json(answer.to_dict())
+
+        # Deciding what was worth remembering is a second model call, so it
+        # happens after the answer has already gone out, on its own thread.
+        # The person is not kept waiting for it, and if it fails they still got
+        # what they asked for.
+        if route == "/api/ask":
+            threading.Thread(
+                target=memory.learn,
+                args=(answer.question, answer.text),
+                daemon=True,
+                name="jarvis-remember",
+            ).start()
 
     def _listen(self) -> None:
         """A recording in, the words in it out. Nothing is kept.
@@ -344,6 +361,27 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(heard)
 
+    def _forget(self) -> None:
+        """Delete one remembered fact. The only destructive route there is."""
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        name = str(body.get("name") or "")
+        if not name:
+            self._fail(HTTPStatus.BAD_REQUEST, "expected a 'name'")
+            return
+        try:
+            gone = memory.forget(name)
+        except (OSError, ValueError) as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        if not gone:
+            self._fail(HTTPStatus.NOT_FOUND, f"nothing remembered called {name!r}")
+            return
+        self._json({"ok": True, "facts": [f.to_dict() for f in memory.facts()]})
+
     def _api(self, route: str, query: dict[str, list[str]]) -> None:
         if route == "/api/health":
             self._json(capabilities())
@@ -379,6 +417,12 @@ class Handler(BaseHTTPRequestHandler):
                 "titles": [vault.notes[i].title for i in route_ids],
                 "found": bool(route_ids),
             })
+            return
+
+        if route == "/api/memory":
+            self._json({"facts": [f.to_dict() for f in memory.facts()],
+                        "limit": memory.MAX_FACTS,
+                        "where": str(data_mod.MEMORY_DIR)})
             return
 
         if route == "/api/search":

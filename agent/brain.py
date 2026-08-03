@@ -27,7 +27,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # allow `python agent/brain.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import data as data_mod, llm
+from agent import data as data_mod, llm, memory
 from agent.vault import Note, Vault
 
 # ---------------------------------------------------------------------------
@@ -55,6 +55,7 @@ class Answer:
     text: str
     citations: list[tuple[str, str, str]]   # (note id, title, type)
     considered: list[str]
+    recalled: list[str]                     # remembered facts put in the prompt
     usage: dict[str, object]
     seconds: float
 
@@ -68,6 +69,7 @@ class Answer:
                 for nid, title, note_type in self.citations
             ],
             "considered": self.considered,
+            "recalled": self.recalled,
             "usage": self.usage,
             "seconds": round(self.seconds, 2),
         }
@@ -210,7 +212,14 @@ _FOLLOW_QUESTION = "Answer in the language the question is written in."
 
 _ASK_SYSTEM = _GROUND_RULES + """
 
-Keep it to a few short paragraphs unless the question genuinely needs more."""
+Keep it to a few short paragraphs unless the question genuinely needs more.
+
+You do keep things between conversations: anything durable the person tells you \
+— a decision, a preference, a standing rule — is recorded afterwards and comes \
+back to you later under REMEMBERED. So never say you cannot remember something \
+or that you have no memory. You are not a store of records and cannot change \
+their notes, but what they tell you does carry forward. Do not announce that \
+you are remembering; just answer."""
 
 _BRIEF_SYSTEM = _GROUND_RULES + """
 
@@ -242,13 +251,29 @@ def _run(vault: Vault, kind: str, question: str, system: str,
     system = system.format(
         language=f"Answer in {lang}." if lang else _FOLLOW_QUESTION
     )
-    text, usage = llm.complete(system, f"{user}\n\nNOTES\n\n{block}")
+
+    # Remembered facts go in their own section, above the notes and clearly not
+    # part of them. They have no note id, so they can never be cited — cited()
+    # only credits ids that exist in the index, and that stays true.
+    prompt = f"{user}\n\nNOTES\n\n{block}"
+    recalled = memory.relevant(question)
+    if recalled:
+        prompt = (
+            "REMEMBERED — things you were told in earlier conversations. Not notes, and\n"
+            "not citable: they have no id. Use them for context; if one contradicts a\n"
+            "note, say so rather than choosing silently.\n\n"
+            + "\n".join(f"- {f.text}" for f in recalled)
+            + f"\n\n{prompt}"
+        )
+
+    text, usage = llm.complete(system, prompt)
     return Answer(
         kind=kind,
         question=question,
         text=text,
         citations=cited(vault, text, considered),
         considered=considered,
+        recalled=[f.text for f in recalled],
         usage=usage,
         seconds=time.time() - started,
     )

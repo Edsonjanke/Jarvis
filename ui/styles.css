@@ -538,6 +538,33 @@ html, body {
   background: var(--accent-soft);
 }
 
+/* ── remembered facts ────────────────────────────────────────────────── */
+
+.fact {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--r);
+}
+.fact:hover { background: rgba(255, 255, 255, 0.05); }
+.fact-when {
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.fact-text {
+  flex: 1;
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.fact-drop { flex: none; font-size: 10px; opacity: 0; }
+.fact:hover .fact-drop, .fact-drop:focus-visible { opacity: 1; }
+.fact-drop[disabled] { opacity: 0.4; }
+
 /* ── narrow screens ──────────────────────────────────────────────────── */
 
 @media (max-width: 1080px) {

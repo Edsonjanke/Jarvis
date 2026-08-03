@@ -455,7 +455,14 @@ function renderAnswer(res) {
   kind.textContent = res.kind;
   const meta = document.createElement("span");
   meta.className = "answer-meta";
-  meta.textContent = `${res.usage?.model || "model"} · read ${res.considered.length} notes · ${res.seconds}s`;
+  // Say when memory shaped the answer. Silently using remembered facts would
+  // make an answer harder to account for than it needs to be.
+  const recalled = res.recalled?.length
+    ? ` · ${res.recalled.length} remembered`
+    : "";
+  meta.textContent = `${res.usage?.model || "model"} · read ${res.considered.length} notes`
+                   + `${recalled} · ${res.seconds}s`;
+  meta.title = res.recalled?.length ? res.recalled.join("\n") : "";
   head.append(kind, meta);
 
   const body = document.createElement("div");
@@ -749,6 +756,86 @@ async function stopListening() {
 $("btn-mic").addEventListener("click", () => {
   if (VOICE.recording) stopListening(); else startListening();
 });
+
+// ── memory ────────────────────────────────────────────────────────────────
+//
+// JARVIS writes these itself, after each question, deciding what was worth
+// keeping. That is only acceptable if you can see everything it decided and
+// throw any of it away — so this panel is not a nicety, it is the other half
+// of letting it write at all.
+
+async function showMemory() {
+  let res;
+  try {
+    res = await fetch("/api/memory").then((r) => r.json());
+  } catch (err) {
+    alert("crit", "Offline", `The JARVIS server is not answering. ${err}`);
+    return;
+  }
+
+  const box = $("results");
+  box.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "answer-head";
+  const label = document.createElement("span");
+  label.className = "eyebrow";
+  label.textContent = "remembered";
+  const meta = document.createElement("span");
+  meta.className = "answer-meta";
+  meta.textContent = `${res.facts.length} of ${res.limit} · ${res.where}`;
+  head.append(label, meta);
+  box.appendChild(head);
+
+  if (!res.facts.length) {
+    const empty = document.createElement("div");
+    empty.className = "result snip";
+    empty.textContent = "Nothing yet. This fills as you ask things.";
+    box.appendChild(empty);
+    box.hidden = false;
+    return;
+  }
+
+  for (const fact of res.facts) {
+    const row = document.createElement("div");
+    row.className = "fact";
+
+    const when = document.createElement("span");
+    when.className = "fact-when";
+    when.textContent = new Date(fact.recorded * 1000).toISOString().slice(0, 10);
+
+    const text = document.createElement("span");
+    text.className = "fact-text";
+    text.textContent = fact.text;
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "ghost fact-drop";
+    drop.textContent = "Forget";
+    drop.title = `Delete ${fact.name}.md`;
+    drop.addEventListener("click", async () => {
+      drop.disabled = true;
+      try {
+        const out = await fetch("/api/forget", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: fact.name }),
+        }).then((r) => r.json());
+        if (out.error) { alert("warn", "Memory", out.error); drop.disabled = false; return; }
+        showMemory();
+      } catch (err) {
+        alert("crit", "Offline", `${err}`);
+        drop.disabled = false;
+      }
+    });
+
+    row.append(when, text, drop);
+    box.appendChild(row);
+  }
+  box.hidden = false;
+}
+
+$("btn-memory").addEventListener("click", showMemory);
 
 $("btn-mute").addEventListener("click", () => {
   VOICE.mute = !VOICE.mute;
