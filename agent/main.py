@@ -281,6 +281,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/forget":
                 self._forget()
                 return
+            if route == "/api/brain":
+                self._brain()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -361,6 +364,27 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(heard)
 
+    def _brain(self) -> None:
+        """Switch which model answers. Verified before it takes effect."""
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        try:
+            result = llm.choose(str(body.get("model") or ""))
+        except ValueError as exc:
+            # A malformed id is the caller's mistake, not the model's.
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        except llm.LLMUnavailable as exc:
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+            return
+        except llm.LLMFailed as exc:
+            self._fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            return
+        self._json({**result, "brains": llm.brains()})
+
     def _forget(self) -> None:
         """Delete one remembered fact. The only destructive route there is."""
         try:
@@ -417,6 +441,10 @@ class Handler(BaseHTTPRequestHandler):
                 "titles": [vault.notes[i].title for i in route_ids],
                 "found": bool(route_ids),
             })
+            return
+
+        if route == "/api/brain":
+            self._json({"brains": llm.brains(), "current": llm.model_name()})
             return
 
         if route == "/api/memory":

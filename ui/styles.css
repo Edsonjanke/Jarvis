@@ -538,6 +538,32 @@ html, body {
   background: var(--accent-soft);
 }
 
+/* ── the brain ───────────────────────────────────────────────────────── */
+
+.brain { margin-top: 18px; }
+.brain-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.brain-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: var(--r);
+  cursor: pointer;
+}
+.brain-row:hover:not([disabled]) { background: rgba(255, 255, 255, 0.05); }
+.brain-row[disabled] { cursor: default; opacity: 0.5; }
+.brain-row .name { display: block; font-size: 12px; }
+.brain-row .brain-note { display: block; font-size: 10px; color: var(--ink-3); }
+.brain-row[aria-pressed="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.brain-row[aria-pressed="true"] .name { color: var(--accent); }
+
 /* ── remembered facts ────────────────────────────────────────────────── */
 
 .fact {

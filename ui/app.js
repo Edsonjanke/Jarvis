@@ -78,6 +78,7 @@ async function boot() {
 
   renderTypes();
   renderHubs();
+  renderBrains();
   renderVaultStats();
   rotateExamples();
   applyStageGating();
@@ -268,6 +269,83 @@ function renderHubs() {
     }));
     list.appendChild(li);
   }
+}
+
+// ── the brain ─────────────────────────────────────────────────────────────
+//
+// Which model answers. Switching is verified before it takes effect — the
+// server sends one tiny question to the new brain first — so a model this
+// account cannot use is refused here, in a picker, rather than three seconds
+// into the next real question.
+
+async function renderBrains(payload) {
+  const list = $("brain-list");
+  let data = payload;
+  if (!data) {
+    try {
+      data = await fetch("/api/brain").then((r) => r.json());
+    } catch {
+      return;                       // the panel simply stays as it was
+    }
+  }
+  if (data.error) { alert("warn", "Cérebro", data.error); return; }
+
+  $("brain-now").textContent = data.brains.find((b) => b.current)?.label || "";
+  list.replaceChildren();
+
+  for (const brain of data.brains) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "brain-row";
+    btn.setAttribute("aria-pressed", String(!!brain.current));
+    btn.title = brain.id;
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = brain.label;
+
+    const note = document.createElement("span");
+    note.className = "brain-note";
+    note.textContent = brain.note || "";
+
+    btn.append(name, note);
+    btn.addEventListener("click", () => switchBrain(brain, btn));
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
+}
+
+async function switchBrain(brain, btn) {
+  if (brain.current || switchBrain.busy) return;
+  switchBrain.busy = true;
+  const was = btn.querySelector(".brain-note").textContent;
+  btn.querySelector(".brain-note").textContent = "testando…";
+  document.querySelectorAll(".brain-row").forEach((b) => (b.disabled = true));
+
+  let res;
+  try {
+    res = await fetch("/api/brain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: brain.id }),
+    }).then((r) => r.json());
+  } catch (err) {
+    alert("crit", "Offline", `${err}`);
+  }
+  document.querySelectorAll(".brain-row").forEach((b) => (b.disabled = false));
+  switchBrain.busy = false;
+
+  if (!res || res.error) {
+    btn.querySelector(".brain-note").textContent = was;
+    if (res?.error) alert("warn", "Cérebro", res.error);
+    return;
+  }
+  renderBrains(res);
+  // The health payload was fetched at boot, so the model row beneath would
+  // otherwise keep naming the brain we just switched away from.
+  if (state.health?.model) state.health.model.name = res.model;
+  renderVaultStats();
 }
 
 function renderVaultStats() {

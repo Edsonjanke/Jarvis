@@ -177,9 +177,7 @@ def _workdir() -> Path:
     from the repo would mean a CLAUDE.md added there later could rewrite the
     system prompt with nothing to show for it.
     """
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
-    root = Path(base) if base else Path.home() / ".cache"
-    path = root / "Jarvis" / "claude-cwd"
+    path = data_mod.state_dir() / "claude-cwd"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -279,7 +277,73 @@ def account() -> dict[str, object]:
 
 
 def model_name() -> str:
+    """Which brain is answering right now."""
     return data_mod.claude_model()
+
+
+# The brains offered in the UI. Concrete ids, never aliases — an alias moves
+# between releases, and a silent move throws away the prompt cache. Anything
+# not on this list can still be set in .env; the picker just does not offer it.
+BRAINS = (
+    {"id": "claude-opus-5",     "label": "Opus 5",     "note": "o mais capaz — melhor a citar a nota certa"},
+    {"id": "claude-sonnet-5",   "label": "Sonnet 5",   "note": "quase tão bom, bem mais rápido"},
+    {"id": "claude-opus-4-8",   "label": "Opus 4.8",   "note": "a geração anterior do Opus"},
+    {"id": "claude-sonnet-4-6", "label": "Sonnet 4.6", "note": "leve na janela de uso"},
+    {"id": "claude-haiku-4-5",  "label": "Haiku 4.5",  "note": "o mais rápido e barato; erra mais citação"},
+)
+
+
+def brains() -> list[dict[str, object]]:
+    """The catalogue, with the current one marked."""
+    current = model_name()
+    known = [dict(b, current=b["id"] == current) for b in BRAINS]
+    if not any(b["current"] for b in known):
+        # Set to something we do not offer — from .env, say. Show it anyway
+        # rather than pretend the picker covers everything.
+        known.append({"id": current, "label": current, "current": True,
+                      "note": "definido no .env"})
+    return known
+
+
+def choose(model: str) -> dict[str, object]:
+    """Switch brains, proving the new one answers before committing to it.
+
+    One tiny probe call. A model this account cannot use would otherwise fail
+    on the next real question, with a person waiting for an answer rather than
+    watching a picker.
+
+    The probe must be answered by the model that was asked for, not by the
+    fallback. --fallback-model rescues a bad primary, so a nonsense id sails
+    through a call that merely "succeeded": the switch looks fine and every
+    question afterwards is quietly answered by the fallback instead. Refusing a
+    genuinely-available-but-overloaded model here is the cheaper mistake.
+    """
+    model = " ".join(str(model or "").split())
+    if not model:
+        raise ValueError("no model given")
+    if len(model) > 120 or any(c.isspace() for c in model):
+        raise ValueError(f"{model!r} is not a model id")
+
+    previous = data_mod.claude_model()
+
+    def undo():
+        data_mod.choose_model("" if previous == model else previous)
+
+    data_mod.choose_model(model)
+    try:
+        _, usage = complete("Reply with exactly: OK", "ping", effort="low")
+    except (LLMUnavailable, LLMFailed):
+        undo()
+        raise
+
+    answered = usage.get("model")
+    if answered != model:
+        undo()
+        raise LLMFailed(
+            f"{model!r} did not answer — {answered!r} stood in for it. "
+            f"Either this account cannot use it, or it is busy right now."
+        )
+    return {"model": model, "answered": answered, "seconds": usage.get("seconds")}
 
 
 # ---------------------------------------------------------------------------

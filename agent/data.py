@@ -197,14 +197,47 @@ def claude_cli() -> str:
     return setting("CLAUDE_CLI").strip().strip('"')
 
 
-def claude_model() -> str:
-    """The model JARVIS asks for, as a concrete id.
+def state_dir() -> Path:
+    """The runtime's own scratch — outside the repo, and not the vault.
 
-    Not an alias: 'opus' and 'sonnet' are moved from release to release, and a
-    silent move throws away the prompt cache that makes repeated questions over
-    the same vault cheap.
+    WRITEABLE_ROOTS above says memory/ is the only place JARVIS writes "other
+    than the runtime's own scratch". This is that scratch: llm.py runs the CLI
+    from a directory in here, and the chosen brain is remembered here. Nothing
+    personal goes in it, and none of it is versioned.
     """
-    return setting("CLAUDE_CLI_MODEL") or setting("CLAUDE_MODEL", "claude-opus-5")
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
+    root = Path(base) if base else Path.home() / ".local" / "state"
+    path = root / "Jarvis"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+BRAIN_FILE = "brain.txt"
+
+
+def claude_model() -> str:
+    """The model JARVIS asks for — its brain — as a concrete id.
+
+    Three sources, in order: what you picked in the UI, then CLAUDE_CLI_MODEL
+    in .env, then Opus. Picking in the UI wins so that changing your mind does
+    not mean editing a file, and .env stays the answer for a machine you have
+    not clicked on yet.
+
+    Concrete ids, not aliases: 'opus' and 'sonnet' are moved from release to
+    release, and a silent move throws away the prompt cache that makes repeated
+    questions over the same vault cheap.
+    """
+    try:
+        picked = (state_dir() / BRAIN_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        picked = ""
+    return picked or setting("CLAUDE_CLI_MODEL") or setting("CLAUDE_MODEL", "claude-opus-5")
+
+
+def choose_model(model: str) -> None:
+    """Remember which brain to use. Empty string falls back to .env."""
+    model = " ".join(str(model or "").split())
+    (state_dir() / BRAIN_FILE).write_text(model, encoding="utf-8")
 
 
 def language() -> str:
