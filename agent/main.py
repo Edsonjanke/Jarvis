@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import brain, data as data_mod, llm, memory, voice
+from agent import brain, data as data_mod, embed, llm, memory, voice
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -65,7 +65,21 @@ class VaultStore:
         with self._lock:
             data_mod.reload_env()
             self._vault = Vault.from_config()
-            return self._vault
+        catch_up(self._vault)
+        return self._vault
+
+
+def catch_up(vault: Vault) -> None:
+    """Embed anything new, off the critical path.
+
+    Costs nothing and does nothing when Ollama is absent, which is the usual
+    case. When it is present, a first run over a real vault takes seconds —
+    long enough that nobody should wait for it to see the graph.
+    """
+    if not embed.available():
+        return
+    threading.Thread(target=embed.index, args=(vault,), daemon=True,
+                     name="jarvis-embed").start()
 
 
 STORE = VaultStore()
@@ -110,6 +124,13 @@ def capabilities() -> dict[str, object]:
         "memory": {
             "facts": len(memory.facts()),
             "limit": memory.MAX_FACTS,
+        },
+        # Meaning-based recall is optional and normally off. Word-based recall
+        # works either way, so this reports a bonus, not a fault.
+        "semantic": {
+            "available": embed.available(),
+            "model": embed.model() if embed.available() else None,
+            "reason": embed.reason(),
         },
         "stage": 5,
         "stage_note": "",
@@ -501,6 +522,7 @@ def main() -> int:
     # Ask the CLI once, here, whether it is signed in. Every /api/health after
     # this reads what it latched instead of spawning a process per page load.
     llm.probe()
+    catch_up(vault)
     caps = capabilities()
 
     print(vault.report())

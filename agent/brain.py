@@ -27,7 +27,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # allow `python agent/brain.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import data as data_mod, llm, memory
+from agent import data as data_mod, embed, llm, memory
 from agent.vault import Note, Vault
 
 # ---------------------------------------------------------------------------
@@ -35,6 +35,7 @@ from agent.vault import Note, Vault
 # ---------------------------------------------------------------------------
 
 SEED_HITS = 8            # BM25 matches before the graph widens the net
+THIN = 3                 # below this, the words missed and it is worth asking again
 NEIGHBOURS_PER_HIT = 3   # linked notes pulled in per match
 MAX_NOTES = 16           # hard cap on what reaches the prompt
 NOTE_CHARS = 2_400       # per-note text budget
@@ -79,16 +80,69 @@ class Answer:
 # Retrieval
 # ---------------------------------------------------------------------------
 
+_EXPAND_SYSTEM = """\
+You are given one question someone is asking of their own notes. Reply with the \
+words those notes would most likely actually contain on that subject.
+
+You have no tools. Reply with nothing but the words, comma separated, on one \
+line. No explanation, no numbering, no quotes.
+
+Give both the question's own language and English, because notes are often \
+written in a different language from the question — "atraso" should also \
+produce "outstanding, overdue, unpaid, late". Prefer the plain nouns and verbs \
+a note would use over abstract ones. Ten words at most, fewer is better."""
+
+
+def expand(query: str) -> list[str]:
+    """Other words the notes might use for the same thing.
+
+    BM25 only finds words that are there. Folding accents made "depósito"
+    reach a note saying "deposit", because a fold is still the same word — it
+    does nothing for "atraso" against notes that say "outstanding", which
+    returned nothing at all. This is the cheap half of closing that; embed.py
+    is the thorough half.
+
+    Failure is silent: an expansion that does not happen leaves the ordinary
+    word search exactly as it was.
+    """
+    try:
+        text, _ = llm.complete(_EXPAND_SYSTEM, query, effort="low")
+    except (llm.LLMUnavailable, llm.LLMFailed):
+        return []
+    words = [w.strip(" .,;:\"'") for w in text.replace("\n", ",").split(",")]
+    seen: dict[str, None] = {}
+    for word in words:
+        if 2 < len(word) < 40:
+            seen.setdefault(word.lower(), None)
+    return list(seen)[:10]
+
+
 def retrieve(vault: Vault, query: str, *, limit: int = SEED_HITS) -> list[Note]:
-    """BM25 seeds, widened one hop along the link graph.
+    """Words, then other words, then meaning — and then the link graph.
 
     Seeds keep their rank; neighbours follow, best-connected first. Order is
     the order the model reads them in, so it matters.
     """
     chosen: dict[str, Note] = {}
 
+    # 1. The words that are actually there. Free, and usually enough.
     for hit in vault.search(query, limit=limit):
         chosen.setdefault(hit.note.id, hit.note)
+
+    # 2. Only when that came back thin — a question whose vocabulary simply
+    #    does not appear in the notes, which is the normal case for a question
+    #    asked in one language about notes written in another.
+    if len(chosen) < THIN:
+        for word in expand(query):
+            for hit in vault.search(word, limit=3):
+                chosen.setdefault(hit.note.id, hit.note)
+
+    # 3. Meaning, when Ollama is there to supply it. A no-op otherwise, and
+    #    the two above have already done their work either way.
+    for note_id in embed.similar(vault, query):
+        note = vault.notes.get(note_id)
+        if note is not None:
+            chosen.setdefault(note_id, note)
 
     for note in list(chosen.values()):
         neighbours = sorted(
