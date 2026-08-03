@@ -564,6 +564,16 @@ html, body {
 }
 .brain-row[aria-pressed="true"] .name { color: var(--accent); }
 
+/* Why a tool is not available is worth reading, so it is not hidden in a
+   title attribute where only a mouse would ever find it. */
+.tool-note {
+  margin: 6px 8px 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink-3);
+  opacity: 0.75;
+}
+
 /* ── remembered facts ────────────────────────────────────────────────── */
 
 .fact {

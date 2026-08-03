@@ -79,6 +79,7 @@ async function boot() {
   renderTypes();
   renderHubs();
   renderBrains();
+  renderTools();
   renderVaultStats();
   rotateExamples();
   applyStageGating();
@@ -314,6 +315,97 @@ async function renderBrains(payload) {
     li.appendChild(btn);
     list.appendChild(li);
   }
+}
+
+// ── ferramentas ───────────────────────────────────────────────────────────
+//
+// What JARVIS may reach outside your notes. Everything is off until you switch
+// it on here, one named tool at a time — and it lives on the page rather than
+// in a settings file because "it can read your Drive" is not something anyone
+// should have to discover by reading JSON.
+//
+// A thing worth saying plainly: the claude.ai connectors do NOT reach this.
+// They belong to the interactive login, not to the headless call JARVIS makes.
+// A server has to be declared with its own token, which is why the rows below
+// say what each one is still missing.
+
+async function renderTools(payload) {
+  const list = $("tool-list");
+  if (!list) return;
+  let data = payload;
+  if (!data) {
+    try {
+      data = await fetch("/api/tools").then((r) => r.json());
+    } catch {
+      return;                         // the panel simply stays as it was
+    }
+  }
+  if (data.error) { alert("warn", "Ferramentas", data.error); return; }
+  state.tools = data;
+
+  const now = $("tool-now");
+  if (now) now.textContent = data.enabled ? data.allowed.length + " ligada(s)" : "nenhuma";
+
+  list.replaceChildren();
+  for (const server of data.servers || []) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "brain-row";
+    // A server without a credential cannot be switched on, and saying so on
+    // the button beats letting someone turn it on and watch nothing happen.
+    btn.disabled = !server.authenticated;
+    btn.setAttribute("aria-pressed", String(isOn(data, server.name)));
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = server.label;
+
+    const note = document.createElement("span");
+    note.className = "brain-note";
+    note.textContent = server.authenticated
+      ? (isOn(data, server.name) ? "ligada" : "desligada")
+      : "falta " + server.needs;
+    btn.title = server.authenticated ? server.name : server.needs;
+
+    btn.append(name, note);
+    btn.addEventListener("click", () => toggleTool(server));
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
+
+  const note = $("tool-note");
+  if (note) note.textContent = data.note || "";
+}
+
+// A server is on when at least one of its tools is in the allowlist. The
+// allowlist is the truth — the server list is only how it is presented.
+function isOn(data, server) {
+  return (data.allowed || []).some((t) => t.split("__")[1] === server);
+}
+
+async function toggleTool(server) {
+  if (toggleTool.busy) return;
+  toggleTool.busy = true;
+  document.querySelectorAll("#tool-list .brain-row").forEach((b) => (b.disabled = true));
+
+  const current = state.tools?.allowed || [];
+  const allowed = isOn(state.tools, server.name)
+    ? current.filter((t) => t.split("__")[1] !== server.name)
+    : current.concat(server.tools || []);
+
+  let res;
+  try {
+    res = await fetch("/api/tools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowed }),
+    }).then((r) => r.json());
+  } catch (err) {
+    alert("crit", "Offline", `${err}`);
+  }
+  toggleTool.busy = false;
+  renderTools(res);
 }
 
 async function switchBrain(brain, btn) {

@@ -21,8 +21,12 @@ are load-bearing rather than tidy:
     the clear — into ~/.claude/projects/<cwd>/<uuid>.jsonl, and leaves it there.
   * `-n jarvis` is the only thing that suppresses a *second* model call that
     Claude Code makes to name the session. That call also receives the notes.
-  * `--tools ""` is the guarantee that the model never touches the disk. The
-    notes arrive in the prompt; there is nothing for it to go and read.
+  * `--tools` is the guarantee about what the model may touch, and since step 5
+    it is not always empty. Empty is still the default and still means the
+    notes arrive in the prompt with nothing to go and read. What can make it
+    non-empty is tools.py, one named tool at a time, switched on from the page.
+    `--strict-mcp-config` rides along with it always, so what is reachable is
+    only ever what JARVIS declared — never this machine's own MCP config.
   * `--setting-sources ""` stops the working directory supplying a CLAUDE.md,
     a skill, or a settings file with shell hooks in it. A CLAUDE.md is an
     instruction: left discoverable, it silently rewrites the system prompt.
@@ -62,6 +66,7 @@ if __package__ in (None, ""):  # allow `python agent/llm.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent import data as data_mod
+from agent import tools
 
 NO_CLI = ("Claude Code is not installed, or not on PATH — see "
           "https://code.claude.com/docs/en/quickstart")
@@ -357,7 +362,13 @@ def _argv(launcher: Path, system_flag: list[str], model: str, effort: str) -> li
     would hand the model a shell, another would spool the vault to disk. Keeping
     them as one unconditional list is the only defence, so resist making any of
     them conditional.
+
+    Exactly one part is not unconditional, and it is the part that decides what
+    the model may do: tools.flags(). It is empty by default — `--tools ""`, the
+    same guarantee as before — and only ever carries what you switched on by
+    name. `--strict-mcp-config` is inside it and is never dropped.
     """
+    permitted = tools.flags()
     return [
         str(launcher),
         "--print",
@@ -365,12 +376,13 @@ def _argv(launcher: Path, system_flag: list[str], model: str, effort: str) -> li
         "--model", model,
         "--fallback-model", FALLBACK_MODEL,
         "--effort", effort,
-        "--tools", "",                  # no shell, no filesystem, no web
+        *permitted,                     # --tools "" unless you named something
         "--setting-sources", "",        # no CLAUDE.md, no skills, no hooks
-        "--strict-mcp-config",          # no MCP servers from this machine
         "--disable-slash-commands",     # the prompt cannot invoke a skill
         "--no-session-persistence",     # the vault is not written to disk
-        "--max-turns", "1",             # one question, one answer
+        # One turn is one question and one answer. A tool call spends a turn, so
+        # with tools on, one turn would let it fetch and never reply.
+        "--max-turns", "6" if tools.enabled() else "1",
         "-n", "jarvis",                 # suppresses the extra title-model call
         *system_flag,
     ]

@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import brain, data as data_mod, embed, llm, memory, voice
+from agent import brain, data as data_mod, embed, llm, memory, tools, voice
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -132,6 +132,10 @@ def capabilities() -> dict[str, object]:
             "model": embed.model() if embed.available() else None,
             "reason": embed.reason(),
         },
+        # What the model is allowed to reach outside the vault. Empty by
+        # default, and on the page rather than in a config file precisely
+        # because "it can read your Drive" should never be a quiet setting.
+        "tools": tools.state(),
         "stage": 5,
         "stage_note": "",
     }
@@ -305,6 +309,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/brain":
                 self._brain()
                 return
+            if route == "/api/tools":
+                self._tools()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -406,6 +413,28 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json({**result, "brains": llm.brains()})
 
+    def _tools(self) -> None:
+        """Switch tools on or off by name.
+
+        The list is replaced wholesale rather than toggled one at a time, so
+        the page and the allowlist can never drift apart — what you see is
+        what the next call is permitted to do.
+        """
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        names = body.get("allowed")
+        if not isinstance(names, list):
+            self._fail(HTTPStatus.BAD_REQUEST, "allowed must be a list of tool names")
+            return
+        if len(names) > 60:
+            self._fail(HTTPStatus.BAD_REQUEST, "too many tools")
+            return
+        tools.allow(names)
+        self._json(tools.state())
+
     def _forget(self) -> None:
         """Delete one remembered fact. The only destructive route there is."""
         try:
@@ -466,6 +495,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/brain":
             self._json({"brains": llm.brains(), "current": llm.model_name()})
+            return
+
+        if route == "/api/tools":
+            self._json(tools.state())
             return
 
         if route == "/api/memory":
