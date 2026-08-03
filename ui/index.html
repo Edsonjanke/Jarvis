@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en" data-stage="2">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JARVIS</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<!-- Only exists when something is actually broken. Silence means working. -->
+<div id="alerts" class="alerts" role="status" aria-live="polite" hidden></div>
+
+<canvas id="stage" aria-label="Knowledge graph. Use the inspector panel to read notes."></canvas>
+
+<!-- ── left: inspector ─────────────────────────────────────────────── -->
+<aside id="inspector" class="panel panel-left" aria-label="Note inspector">
+  <header class="panel-head">
+    <span class="eyebrow">Inspector</span>
+    <button id="clear-focus" class="ghost" type="button" hidden>Close</button>
+  </header>
+
+  <div id="inspector-empty" class="empty">
+    <p>Nothing selected.</p>
+    <p class="muted">Click a node to read it. Shift-click a second to trace the
+      shortest path between them.</p>
+  </div>
+
+  <article id="inspector-note" class="note" hidden>
+    <div class="note-type"><span class="swatch" id="note-swatch"></span><span id="note-kind"></span></div>
+    <h1 id="note-title"></h1>
+    <p class="note-path" id="note-path"></p>
+    <ul class="meta-grid" id="note-meta"></ul>
+    <div class="note-body" id="note-body"></div>
+    <section class="links">
+      <span class="eyebrow">Links <span id="link-count" class="count"></span></span>
+      <ul id="note-links"></ul>
+    </section>
+  </article>
+
+  <section id="path-panel" class="path" hidden>
+    <span class="eyebrow">Shortest path</span>
+    <ol id="path-list"></ol>
+  </section>
+
+  <section class="hubs">
+    <span class="eyebrow">Top hubs</span>
+    <ol id="hub-list"></ol>
+  </section>
+</aside>
+
+<!-- ── right: filters + reactor ────────────────────────────────────── -->
+<aside id="sidebar" class="panel panel-right" aria-label="Filters and status">
+  <div class="reactor-wrap">
+    <canvas id="reactor" width="176" height="176" aria-hidden="true"></canvas>
+    <div class="reactor-read">
+      <span id="reactor-state" class="reactor-state">idle</span>
+      <span id="reactor-sub" class="reactor-sub"></span>
+    </div>
+  </div>
+
+  <section class="filters">
+    <header class="panel-head">
+      <span class="eyebrow">Types</span>
+      <button id="filter-all" class="ghost" type="button">All</button>
+    </header>
+    <ul id="type-list" class="type-list"></ul>
+  </section>
+
+  <section class="vault-read">
+    <span class="eyebrow">Vault</span>
+    <dl id="vault-stats"></dl>
+  </section>
+</aside>
+
+<!-- ── bottom: ask bar ─────────────────────────────────────────────── -->
+<footer id="askbar" class="askbar" aria-label="Ask JARVIS">
+  <div class="ask-field">
+    <span id="ask-mode" class="ask-mode">find</span>
+    <input id="ask-input" type="text" autocomplete="off" spellcheck="false"
+           aria-label="Search your files">
+    <span id="ask-hint" class="ask-hint" aria-hidden="true"></span>
+  </div>
+  <div class="ask-actions">
+    <button id="btn-mic"    class="key" type="button" data-stage-min="4">Mic</button>
+    <button id="btn-mute"   class="key" type="button" data-stage-min="4">Mute</button>
+    <button id="btn-brief"  class="key" type="button" data-stage-min="3">Brief</button>
+    <button id="btn-plan"   class="key" type="button" data-stage-min="3">Plan</button>
+    <button id="btn-memory" class="key" type="button" data-stage-min="5">Memory</button>
+  </div>
+  <div id="results" class="results" hidden></div>
+</footer>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Secrets. Never commit.
+.env
+
+# Generated demo fixtures. Rebuild with: python data/generate.py
+data/demo_vault/
+
+# Remembered facts are personal. Delete this line if you want them versioned.
+memory/*.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
