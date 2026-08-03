@@ -24,8 +24,12 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import data as data_mod
+from agent import brain, data as data_mod, llm
 from agent.vault import Vault
+
+# A question is a question, not a payload. Anything larger is a mistake or an
+# attack, and is refused before it is read into memory.
+MAX_BODY_BYTES = 64 * 1024
 
 UI_DIR = data_mod.ROOT / "ui"
 
@@ -74,11 +78,14 @@ def capabilities() -> dict[str, object]:
         "roots": [{"label": r.label, "path": str(r.path)} for r in vault.roots],
         "problems": vault.problems,
         "skipped": len(vault.skipped),
+        # The model runs on the Claude subscription signed in on this machine,
+        # so there is no key to report — only whether Claude Code is installed
+        # and logged in. llm.reason() never spawns anything; the answer was
+        # latched at startup by llm.probe().
         "model": {
-            "available": bool(data_mod.anthropic_key()),
-            "name": data_mod.anthropic_model() if data_mod.anthropic_key() else None,
-            "reason": None if data_mod.anthropic_key()
-                      else "no ANTHROPIC_API_KEY in .env — routing falls back to file scoring",
+            "available": llm.available(),
+            "name": llm.model_name() if llm.available() else None,
+            "reason": llm.reason(),
         },
         "voice": {
             "available": bool(data_mod.elevenlabs_key()),
@@ -86,10 +93,10 @@ def capabilities() -> dict[str, object]:
             "reason": None if data_mod.elevenlabs_key()
                       else "no ELEVENLABS_API_KEY in .env — speech is off",
         },
-        # Step 4 wires these. Declared now so the UI can grey them honestly
-        # instead of pretending a dead button works.
-        "stage": 2,
-        "stage_note": "graph and index only — conversation and voice are not wired yet",
+        # Steps 4 and 5 wire the rest. Declared now so the UI can grey them
+        # honestly instead of pretending a dead button works.
+        "stage": 3,
+        "stage_note": "graph, search and conversation — voice and memory are not wired yet",
     }
 
 
@@ -131,6 +138,91 @@ class Handler(BaseHTTPRequestHandler):
     def _fail(self, status: int, message: str) -> None:
         self._json({"error": message}, status)
 
+    # -- who is allowed to ask -----------------------------------------------
+    #
+    # Binding to 127.0.0.1 keeps other machines out. It does not keep other
+    # *pages* out: anything the browser has open can post here, and until now
+    # that only cost a reindex. Now it spends the Claude plan. Two checks, and
+    # between them a page on the open web can neither reach this nor read a note.
+
+    _LOCAL = ("127.0.0.1", "localhost", "::1", "[::1]")
+
+    def _host_is_local(self) -> bool:
+        """Reject a Host we do not recognise, which is what stops DNS rebinding.
+
+        A page on evil.example can re-point its own name at 127.0.0.1 and become
+        same-origin with this server. What it cannot do is change the Host header
+        it sends, so refusing an unfamiliar one closes that door.
+        """
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return False
+        if host.startswith("["):                       # [::1]:8765
+            name = host.partition("]")[0] + "]"
+        else:
+            name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        return name in self._LOCAL
+
+    def _origin_is_ours(self) -> bool:
+        """A cross-site page may not post here.
+
+        No Origin at all is fine — that is curl, or a test. A browser always
+        sends one on a POST, so a foreign value is exactly the case we want.
+        """
+        origin = self.headers.get("Origin")
+        if origin is None or origin == "null":
+            return True
+        parsed = urlparse(origin)
+        return (parsed.hostname or "").lower() in self._LOCAL
+
+    def _guard(self) -> bool:
+        if not self._host_is_local():
+            self._fail(HTTPStatus.FORBIDDEN, "unrecognised Host header")
+            return False
+        if not self._origin_is_ours():
+            self._fail(HTTPStatus.FORBIDDEN, "cross-site requests are refused")
+            return False
+        return True
+
+    def _body(self) -> dict[str, object]:
+        """The JSON body of a POST. Missing or empty is an empty dict.
+
+        The body is read before anything is validated. On a keep-alive
+        connection an unread body is not discarded — it stays in the socket and
+        the next request starts parsing halfway through it, so rejecting early
+        would turn one bad request into a broken connection.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            raise ValueError("Content-Length is not a number") from None
+
+        if length > MAX_BODY_BYTES:
+            # Too big to drain, so this connection does not get reused.
+            self.close_connection = True
+            raise ValueError(f"body over the {MAX_BODY_BYTES // 1024} kB cap")
+
+        raw = self.rfile.read(length) if length > 0 else b""
+
+        # Requiring JSON is the other half of the cross-site guard: a form or a
+        # text/plain fetch is a "simple" request that needs no permission from
+        # the browser, while application/json forces a preflight this server
+        # does not answer.
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype and ctype != "application/json":
+            raise ValueError(f"expected application/json, got {ctype}")
+
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"body is not valid JSON: {exc}") from None
+        if not isinstance(payload, dict):
+            raise ValueError("body must be a JSON object")
+        return payload
+
     # -- routing ------------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
@@ -139,6 +231,10 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             route = parsed.path
             if route.startswith("/api/"):
+                # /api/note serves the full text of any note, so the guard has
+                # to cover reads too, not just the routes that spend money.
+                if not self._guard():
+                    return
                 self._api(route, query)
             else:
                 self._static(route)
@@ -153,10 +249,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             route = urlparse(self.path).path
+            if not self._guard():
+                return
             if route == "/api/reindex":
                 vault = STORE.rebuild()
                 self._json({"ok": True, "notes": len(vault.notes),
                             "seconds": round(vault.build_seconds, 3)})
+                return
+            if route in ("/api/ask", "/api/brief", "/api/plan"):
+                self._think(route)
                 return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
@@ -164,6 +265,32 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             self._fail(HTTPStatus.INTERNAL_SERVER_ERROR, "server error — see the terminal")
+
+    def _think(self, route: str) -> None:
+        """ask / brief / plan. The key stays here; only the answer goes out."""
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        vault = STORE.get()
+        try:
+            if route == "/api/ask":
+                answer = brain.ask(vault, str(body.get("q") or ""))
+            elif route == "/api/plan":
+                answer = brain.plan(vault, str(body.get("goal") or ""))
+            else:
+                answer = brain.brief(vault)
+        except llm.LLMUnavailable as exc:
+            # Configuration, not breakage: the graph and the search still work.
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+            return
+        except llm.LLMFailed as exc:
+            self._fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            return
+
+        self._json(answer.to_dict())
 
     def _api(self, route: str, query: dict[str, list[str]]) -> None:
         if route == "/api/health":
@@ -247,10 +374,23 @@ def main() -> int:
 
     host, port = data_mod.server_address()
     vault = STORE.get()
+    # Ask the CLI once, here, whether it is signed in. Every /api/health after
+    # this reads what it latched instead of spawning a process per page load.
+    llm.probe()
     caps = capabilities()
 
     print(vault.report())
-    print(f"  model    {caps['model']['reason'] or caps['model']['name']}")
+    who = llm.account()
+    if caps["model"]["reason"]:
+        print(f"  model    {caps['model']['reason']}")
+    else:
+        lang = data_mod.language()
+        print(f"  model    {caps['model']['name']} on your "
+              f"{who.get('plan') or 'Claude'} subscription ({who.get('auth')})"
+              f"{', answering in ' + lang if lang else ''}")
+    note = llm.cli_note()
+    if note:
+        print(f"  note     {note}")
     print(f"  voice    {caps['voice']['reason'] or 'ElevenLabs key set'}")
     print(f"\n  JARVIS on http://{host}:{port}   (ctrl-c to stop)\n")
 

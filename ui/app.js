@@ -1,8 +1,11 @@
 /* app.js — wiring. Fetches the index, drives the graph, the inspector, the
  * filter panel and the reactor.
  *
- * Stage 2: graph and search only. Conversation and voice are not connected,
+ * Stage 3: graph, search and conversation. Voice and memory are not connected,
  * and the controls that need them say so rather than failing quietly.
+ *
+ * The ask bar does two things at once and they do not collide: typing runs the
+ * instant file search, Enter sends the question to the model.
  */
 
 import { Graph } from "/graph.js";
@@ -368,9 +371,141 @@ input.addEventListener("input", () => {
 });
 input.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") { input.value = ""; runSearch(""); input.blur(); }
+  if (ev.key === "Enter" && STAGE >= 3) {
+    ev.preventDefault();
+    clearTimeout(searchTimer);          // don't let the search overwrite the answer
+    think("ask", { q: input.value }, input.value);
+  }
 });
 
 $("ask-hint").textContent = "enter";
+
+// ── asking ────────────────────────────────────────────────────────────────
+
+// One at a time. A second question while the first is in flight would race to
+// write the same panel, and the loser would look like a dropped answer.
+let thinking = false;
+
+async function think(kind, payload, label) {
+  if (thinking) return;
+  if (kind !== "brief" && !String(label || "").trim()) {
+    hint(kind === "plan" ? "Type the goal first, then press Plan." : "Type a question first.");
+    return;
+  }
+
+  thinking = true;
+  setReactor("thinking", kind);
+  state.level = 0.55;
+  hint(`Reading the vault…`);
+
+  let res;
+  try {
+    res = await fetch(`/api/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then((r) => r.json());
+  } catch (err) {
+    $("results").hidden = true;
+    alert("crit", "Offline", `The JARVIS server is not answering. ${err}`);
+    return stopThinking();
+  }
+
+  if (res.error) {
+    hint(res.error);
+    alert("warn", kind === "brief" ? "Brief" : kind === "plan" ? "Plan" : "Ask", res.error);
+    return stopThinking();
+  }
+
+  renderAnswer(res);
+  stopThinking();
+}
+
+function stopThinking() {
+  thinking = false;
+  state.level = 0;
+  setReactor("idle");
+}
+
+function hint(text) {
+  const box = $("results");
+  box.replaceChildren();
+  const row = document.createElement("div");
+  row.className = "result snip";
+  row.textContent = text;
+  box.appendChild(row);
+  box.hidden = false;
+}
+
+function renderAnswer(res) {
+  const box = $("results");
+  box.replaceChildren();
+
+  const wrap = document.createElement("div");
+  wrap.className = "answer";
+
+  const head = document.createElement("div");
+  head.className = "answer-head";
+  const kind = document.createElement("span");
+  kind.className = "eyebrow";
+  kind.textContent = res.kind;
+  const meta = document.createElement("span");
+  meta.className = "answer-meta";
+  meta.textContent = `${res.usage?.model || "model"} · read ${res.considered.length} notes · ${res.seconds}s`;
+  head.append(kind, meta);
+
+  const body = document.createElement("div");
+  body.className = "answer-body";
+  body.textContent = res.answer;
+
+  wrap.append(head, body);
+
+  if (res.usage?.truncated) {
+    const cut = document.createElement("div");
+    cut.className = "answer-warn";
+    cut.textContent = "Cut off at the token limit — the answer above is incomplete.";
+    wrap.appendChild(cut);
+  }
+
+  const cites = document.createElement("div");
+  cites.className = "cites";
+  const label = document.createElement("span");
+  label.className = "eyebrow";
+  label.textContent = res.citations.length ? "Sources" : "";
+  cites.appendChild(label);
+
+  if (!res.citations.length) {
+    const none = document.createElement("span");
+    none.className = "answer-warn";
+    none.textContent = "No note was cited — treat this as unsourced.";
+    cites.appendChild(none);
+  }
+
+  for (const cite of res.citations) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "cite";
+    chip.title = cite.id;
+    const dot = document.createElement("span");
+    dot.className = "swatch";
+    dot.style.background = graph.colourFor(cite.type);
+    const text = document.createElement("span");
+    text.textContent = cite.title;
+    chip.append(dot, text);
+    chip.addEventListener("click", () => { openNote(cite.id); graph.centreOn(cite.id); });
+    cites.appendChild(chip);
+  }
+  wrap.appendChild(cites);
+
+  box.appendChild(wrap);
+  box.hidden = false;
+
+  // Light every cited note at once, so the answer has a shape on the graph.
+  graph.setPath(res.citations.map((c) => c.id));
+}
+
+$("btn-brief").addEventListener("click", () => think("brief", {}, "brief"));
+$("btn-plan").addEventListener("click", () => think("plan", { goal: input.value }, input.value));
 
 // ── stage gating: a control that cannot work says which step wires it ─────
 

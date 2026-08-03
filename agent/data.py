@@ -176,15 +176,43 @@ def vault_sources() -> SourceReport:
 
 
 # ---------------------------------------------------------------------------
-# Keys
+# Model and keys
+#
+# There is no Anthropic API key here any more. The model runs on the Claude
+# subscription already signed in on this machine, and llm.py owns that.
 # ---------------------------------------------------------------------------
 
-def anthropic_key() -> str:
-    return setting("ANTHROPIC_API_KEY")
+def llm_mode() -> str:
+    """How JARVIS reaches a model. Only 'subscription' exists now.
+
+    The API-key path was removed when this moved onto the Claude subscription.
+    The setting is still read so that a .env asking for something else gets a
+    straight answer instead of being quietly overruled.
+    """
+    return setting("JARVIS_LLM", "subscription").strip().lower()
 
 
-def anthropic_model() -> str:
-    return setting("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+def claude_cli() -> str:
+    """An explicit path to claude.exe, or '' to go and find it."""
+    return setting("CLAUDE_CLI").strip().strip('"')
+
+
+def claude_model() -> str:
+    """The model JARVIS asks for, as a concrete id.
+
+    Not an alias: 'opus' and 'sonnet' are moved from release to release, and a
+    silent move throws away the prompt cache that makes repeated questions over
+    the same vault cheap.
+    """
+    return setting("CLAUDE_CLI_MODEL") or setting("CLAUDE_MODEL", "claude-opus-5")
+
+
+def language() -> str:
+    """The language answers should come back in, or '' to follow the question.
+
+    Matters most for the briefing, which has no question to take a cue from.
+    """
+    return setting("JARVIS_LANG").strip()
 
 
 def elevenlabs_key() -> str:
@@ -212,5 +240,5 @@ if __name__ == "__main__":
         print(f"source    : [{root.label}] {root.path}")
     for problem in report.problems:
         print(f"PROBLEM   : {problem}")
-    print(f"anthropic : {'key set' if anthropic_key() else 'NO KEY'}")
+    print(f"model     : {claude_model()} (on the Claude subscription)")
     print(f"elevenlabs: {'key set' if elevenlabs_key() else 'NO KEY'}")
