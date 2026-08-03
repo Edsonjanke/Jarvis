@@ -88,7 +88,16 @@ def config_path() -> Path | None:
     if not declared:
         return None
     path = data_mod.state_dir() / "mcp-config.json"
-    path.write_text(json.dumps({"mcpServers": declared}), encoding="utf-8")
+    wanted = json.dumps({"mcpServers": declared})
+    # Only when it actually changed. Two questions asked at once both build an
+    # argv, and rewriting this file underneath a CLI that is reading it is a
+    # race with a truncated JSON file at the end of it.
+    try:
+        if path.read_text(encoding="utf-8") == wanted:
+            return path
+    except OSError:
+        pass
+    path.write_text(wanted, encoding="utf-8")
     return path
 
 
@@ -108,7 +117,10 @@ def allow(names: list[str]) -> list[str]:
     for name in names or []:
         name = str(name).strip()
         # Tool names are identifiers, and this one ends up on a command line.
-        if name and len(name) < 120 and not any(c.isspace() for c in name):
+        # A leading dash cannot become a flag — argv is a list, never a shell
+        # string — but a name that looks like one is a mistake either way.
+        if (name and len(name) < 120 and not name.startswith("-")
+                and not any(c.isspace() for c in name)):
             clean.append(name)
     _write(ALLOWED_FILE, clean)
     return clean

@@ -711,7 +711,57 @@ const VOICE = {
   mute: false,
   starting: false,        // set synchronously, so a second click cannot race in
   recording: null,        // the live capture chain, or null
+
+  // -- always-on ------------------------------------------------------------
+  //
+  // "Sempre" leaves the microphone open. What that does NOT mean is that a
+  // microphone open to the room is a microphone streaming to the internet:
+  // the detector below runs here, on your machine, and only a stretch of
+  // audio it judged to be speech is ever uploaded. Silence never leaves.
+  //
+  // Then the wake word decides again, after transcription: no "jarvis" in
+  // what you said, no question asked, and the text is dropped where it stands.
+  awake: false,
+  wakeWord: "jarvis",
+  busy: false,            // one segment in flight at a time
+
+  calibrateMs: 1000,      // learn this room's noise before judging anything
+  startMs: 250,           // sustained sound this long is someone talking
+  hangoverMs: 800,        // silence this long is someone having finished
+  preRollMs: 300,         // kept back, so a segment does not start mid-word
+  minSpeechMs: 400,       // shorter than this is a cough, a door, a chair
 };
+
+/** Lowercase and strip accents, one character in and one character out.
+ *
+ * Length-preserving on purpose, exactly like _fold in vault.py: the wake word
+ * is found in the folded text and the question is then sliced out of the
+ * ORIGINAL by that same offset. "Jarvis, qual é a política?" has to keep its
+ * accents in the question it forwards.
+ */
+function fold(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    let f = ch.toLowerCase();
+    if (f.length !== 1) f = ch;                   // İ lowercases to two chars
+    f = f.normalize("NFD").replace(/[̀-ͯ]/g, "");
+    out += f.length === 1 ? f : ch;
+  }
+  return out;
+}
+
+/** The question after the wake word, or null when it was not said.
+ *
+ * Anything before the wake word is dropped too. Half a sentence of something
+ * else, then "jarvis, what is the deposit policy" — the first half was not
+ * addressed to it and is not its business.
+ */
+function afterWakeWord(text) {
+  const at = fold(text).indexOf(VOICE.wakeWord);
+  if (at < 0) return null;
+  return text.slice(at + VOICE.wakeWord.length).replace(/^[\s,.:;!?"'…—–-]+/, "").trim();
+}
 
 // -- speaking --------------------------------------------------------------
 
@@ -789,6 +839,79 @@ function toBase64(bytes) {
   return btoa(binary);
 }
 
+/** Decide, block by block, whether someone is talking.
+ *
+ * Energy against a noise floor learned from this room in the first second —
+ * a fixed threshold works in one room and in no other. Two timers turn that
+ * into an utterance: sound has to hold for startMs before it counts as speech
+ * starting, and silence has to hold for hangoverMs before it counts as speech
+ * ending. Without the second one, every pause between words ends the sentence.
+ *
+ * Returns the finished segment when one just closed, otherwise null.
+ */
+function detectSpeech(vad, block, rate) {
+  const ms = (block.length / rate) * 1000;
+
+  let sum = 0;
+  for (const v of block) sum += v * v;
+  const rms = Math.sqrt(sum / block.length);
+
+  // The room first. Judging before we know what quiet sounds like here would
+  // make a noisy room permanently "talking" and a silent one deaf.
+  if (vad.calibratedMs < VOICE.calibrateMs) {
+    vad.calibratedMs += ms;
+    vad.floor = vad.floor ? vad.floor * 0.9 + rms * 0.1 : rms;
+    return null;
+  }
+
+  // The absolute term matters: in a truly silent room the floor approaches
+  // zero, and a purely relative threshold would then trigger on nothing.
+  const loud = rms > Math.max(vad.floor * 3, 0.012);
+
+  if (loud) { vad.voicedMs += ms; vad.quietMs = 0; }
+  else      { vad.quietMs += ms; if (!vad.open) vad.voicedMs = 0; }
+
+  if (!vad.open) {
+    // Keep the last fraction of a second in hand. By the time we are sure
+    // someone is talking they are already a syllable in, and a segment that
+    // starts mid-word transcribes as a different word.
+    vad.preRoll.push(block);
+    vad.preRollMs += ms;
+    while (vad.preRollMs > VOICE.preRollMs && vad.preRoll.length > 1) {
+      vad.preRollMs -= (vad.preRoll.shift().length / rate) * 1000;
+    }
+    if (vad.voicedMs >= VOICE.startMs) {
+      vad.open = true;
+      vad.segment = vad.preRoll.slice();
+      vad.segmentMs = vad.preRollMs;
+      vad.preRoll = []; vad.preRollMs = 0;
+    }
+    return null;
+  }
+
+  vad.segment.push(block);
+  vad.segmentMs += ms;
+
+  const ended = vad.quietMs >= VOICE.hangoverMs;
+  const tooLong = vad.segmentMs >= VOICE.maxSeconds * 1000;
+  if (!ended && !tooLong) return null;
+
+  const segment = vad.segment;
+  const spoken = vad.segmentMs - (ended ? vad.quietMs : 0);
+  vad.open = false;
+  vad.segment = []; vad.segmentMs = 0;
+  vad.voicedMs = 0; vad.quietMs = 0;
+
+  // A door closing clears the energy threshold and nothing else. Uploading it
+  // would spend a request to be told it was a door.
+  return spoken >= VOICE.minSpeechMs ? segment : null;
+}
+
+function freshVad() {
+  return { floor: 0, calibratedMs: 0, voicedMs: 0, quietMs: 0,
+           open: false, segment: [], segmentMs: 0, preRoll: [], preRollMs: 0 };
+}
+
 /** Shut a capture chain down and give the microphone back. Idempotent. */
 function releaseChain(rec) {
   if (!rec || rec.done) return;
@@ -802,13 +925,77 @@ function releaseChain(rec) {
   rec.ctx.close().catch(() => {});
 }
 
-async function startListening() {
+/** One detected utterance: transcribe it, and ask only if it was addressed here. */
+async function sendSegment(rec, blocks) {
+  if (VOICE.busy) return;
+  VOICE.busy = true;
+
+  const total = blocks.reduce((n, b) => n + b.length, 0);
+  const samples = new Float32Array(total);
+  let at = 0;
+  for (const b of blocks) { samples.set(b, at); at += b.length; }
+
+  setReactor("thinking", "transcribing");
+  let heard;
+  try {
+    heard = await fetch("/api/listen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio: toBase64(encodeWav(samples, rec.rate)) }),
+    }).then((r) => r.json());
+  } catch {
+    VOICE.busy = false;
+    if (VOICE.recording === rec) setReactor("listening", `diga "${VOICE.wakeWord}"`);
+    return;                                   // stay listening; do not shout
+  }
+  VOICE.busy = false;
+
+  // The chain may have been switched off while that was in the air.
+  if (VOICE.recording !== rec || !rec.always) return;
+
+  if (heard.error) {
+    setReactor("listening", `diga "${VOICE.wakeWord}"`);
+    hint(heard.error);
+    return;
+  }
+
+  const question = afterWakeWord(heard.text || "");
+  if (question === null) {
+    // Not addressed to JARVIS. It is dropped here and now — not shown, not
+    // stored, not put in the box. Overhearing is the cost of always-on, and
+    // acting on what it overheard would be the thing that makes it unusable.
+    setReactor("listening", `diga "${VOICE.wakeWord}"`);
+    return;
+  }
+  if (!question) {
+    // Just the name, nothing after it.
+    setReactor("listening", "pode perguntar");
+    hint("Ouvi você me chamar — faça a pergunta.");
+    return;
+  }
+
+  input.value = question;
+  if (thinking) {
+    setReactor("listening", `diga "${VOICE.wakeWord}"`);
+    hint(`Ouvi "${question}" — outra pergunta já estava rodando. Está na caixa.`);
+    return;
+  }
+  await think("ask", { q: question }, question);
+  // think() resolves when the text lands; the answer is still being read out
+  // loud after that. Going straight back to "listening" here would wipe the
+  // speaking indicator off the reactor mid-sentence.
+  if (VOICE.recording === rec && !window.speechSynthesis?.speaking) {
+    setReactor("listening", `diga "${VOICE.wakeWord}"`);
+  }
+}
+
+async function startListening(always = false) {
   // Synchronously, before any await. getUserMedia takes seconds the first time
   // while the permission prompt is up, and the button gives no feedback until
   // it resolves — so without this a second click builds a second capture chain
   // and the first becomes unreachable, its microphone never released.
   if (VOICE.recording || VOICE.starting) return;
-  if (thinking) {
+  if (thinking && !always) {
     hint("Finish the current question first.");
     return;
   }
@@ -829,7 +1016,8 @@ async function startListening() {
     // rate is read now, not at stop time: closing the context first would make
     // it unreadable, and the WAV header has to state the truth.
     const rec = { stream, ctx, node, source, rate: ctx.sampleRate,
-                  chunks: [], frames: 0, done: false };
+                  chunks: [], frames: 0, done: false,
+                  always, vad: always ? freshVad() : null };
 
     node.onaudioprocess = (event) => {
       if (rec.done) return;
@@ -838,25 +1026,47 @@ async function startListening() {
       if (VOICE.recording !== rec) { releaseChain(rec); return; }
 
       const block = new Float32Array(event.inputBuffer.getChannelData(0));
-      rec.chunks.push(block);
-      rec.frames += block.length;
 
       let peak = 0;
       for (const v of block) peak = Math.max(peak, Math.abs(v));
       state.level = Math.min(1, peak * 3);
 
+      if (rec.always) {
+        // It must not hear itself. Its own answer coming out of the speakers
+        // contains the word "jarvis" often enough, and one reply triggering
+        // the next is a loop with your subscription on the other end.
+        if (window.speechSynthesis?.speaking || VOICE.busy || thinking) {
+          rec.vad = freshVad();       // and recalibrate, the room just changed
+          state.level = 0;
+          return;
+        }
+        const segment = detectSpeech(rec.vad, block, rec.rate);
+        if (segment) sendSegment(rec, segment);
+        return;
+      }
+
+      rec.chunks.push(block);
+      rec.frames += block.length;
       if (rec.frames > VOICE.sampleRate * VOICE.maxSeconds) stopListening();
     };
 
     source.connect(node);
     node.connect(ctx.destination);
     VOICE.recording = rec;
-    $("btn-mic").setAttribute("aria-pressed", "true");
-    setReactor("listening", "click Mic again when done");
+    if (always) {
+      VOICE.awake = true;
+      $("btn-wake").setAttribute("aria-pressed", "true");
+      setReactor("listening", `diga "${VOICE.wakeWord}"`);
+    } else {
+      $("btn-mic").setAttribute("aria-pressed", "true");
+      setReactor("listening", "click Mic again when done");
+    }
   } catch (err) {
     // Anything at all going wrong after the microphone opened must still hand
     // it back — the failure paths are exactly where a hot mic gets forgotten.
     stream?.getTracks().forEach((t) => t.stop());
+    VOICE.awake = false;
+    $("btn-wake")?.setAttribute("aria-pressed", "false");
     alert("warn", "Microphone",
       err?.name === "NotAllowedError"
         ? "Permission for the microphone was refused. Allow it in the address bar and try again."
@@ -874,6 +1084,16 @@ async function stopListening() {
 
   $("btn-mic").setAttribute("aria-pressed", "false");
   state.level = 0;
+
+  // Always-on already sent whatever was worth sending, utterance by utterance.
+  // What is left in the buffer is the room, and switching off is not a
+  // question — so nothing is uploaded on the way out.
+  if (rec.always) {
+    VOICE.awake = false;
+    $("btn-wake").setAttribute("aria-pressed", "false");
+    setReactor("idle");
+    return;
+  }
 
   const total = rec.chunks.reduce((n, c) => n + c.length, 0);
   if (total < rec.rate * 0.4) {
@@ -924,7 +1144,17 @@ async function stopListening() {
 }
 
 $("btn-mic").addEventListener("click", () => {
-  if (VOICE.recording) stopListening(); else startListening();
+  if (VOICE.recording) stopListening(); else startListening(false);
+});
+
+$("btn-wake").addEventListener("click", () => {
+  const live = VOICE.recording;
+  if (live?.always) { stopListening(); return; }   // off
+  // A push-to-talk recording is in progress: hand that question in — it was
+  // deliberately recorded and dropping it silently would be worse — and then
+  // switch on. Pressing "Sempre" has to end with always-on actually on.
+  if (live) stopListening();
+  startListening(true);
 });
 
 // ── memory ────────────────────────────────────────────────────────────────
