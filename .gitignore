@@ -1,5 +1,8 @@
-# Secrets. Never commit.
-.env
+# .env IS committed, by Edson's explicit decision, while the repo is public.
+# This is deliberate and temporary. Deleting the file later does NOT remove the
+# key from history — so before this project is finished the ElevenLabs key must
+# be ROTATED in the dashboard, not merely deleted here.
+# .env
 
 # Generated demo fixtures. Rebuild with: python data/generate.py
 data/demo_vault/
