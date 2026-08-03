@@ -258,8 +258,23 @@ def ask(vault: Vault, question: str) -> Answer:
     question = question.strip()
     if not question:
         raise llm.LLMFailed("no question given")
-    return _run(vault, "ask", question, _ASK_SYSTEM,
-                retrieve(vault, question), f"QUESTION\n\n{question}")
+
+    notes = retrieve(vault, question)
+    if notes:
+        return _run(vault, "ask", question, _ASK_SYSTEM, notes, f"QUESTION\n\n{question}")
+
+    # Search is lexical, so a question can miss everything — a word the notes
+    # never use, or a question in one language about notes in another. Raising
+    # here would be a dead end, and a spoken question would just fail. Show the
+    # vault's best-connected notes instead and let the answer say, truthfully,
+    # that nothing covers it and what is actually in there.
+    return _run(
+        vault, "ask", question, _ASK_SYSTEM, vault.hubs(HUBS_FOR_BRIEF),
+        f"QUESTION\n\n{question}\n\n"
+        "Searching the vault for this matched no note at all. The notes below are not "
+        "results — they are simply its most connected ones. Say plainly, in one line, that "
+        "nothing here answers the question, then say briefly what the vault does cover.",
+    )
 
 
 def brief(vault: Vault) -> Answer:

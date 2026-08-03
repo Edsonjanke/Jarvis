@@ -11,6 +11,8 @@ ui/ and is refused. The key never leaves this process.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import sys
@@ -24,12 +26,17 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import brain, data as data_mod, llm
+from agent import brain, data as data_mod, llm, voice
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
 # attack, and is refused before it is read into memory.
 MAX_BODY_BYTES = 64 * 1024
+
+# Except a recording, which arrives base64'd inside the same JSON envelope so
+# that one content-type rule covers every route. 30s of 16 kHz mono WAV is
+# ~1 MB, and base64 adds a third.
+MAX_AUDIO_BODY_BYTES = 6 * 1024 * 1024
 
 UI_DIR = data_mod.ROOT / "ui"
 
@@ -87,16 +94,23 @@ def capabilities() -> dict[str, object]:
             "name": llm.model_name() if llm.available() else None,
             "reason": llm.reason(),
         },
+        # The two halves of voice are no longer the same thing. Listening goes
+        # through ElevenLabs and needs a key; speaking is done by the browser
+        # out of this machine's own voices, so it costs nothing, needs no key,
+        # and no audio leaves the room.
         "voice": {
-            "available": bool(data_mod.elevenlabs_key()),
-            "voice_id": data_mod.elevenlabs_voice_id() or None,
-            "reason": None if data_mod.elevenlabs_key()
-                      else "no ELEVENLABS_API_KEY in .env — speech is off",
+            "listen": {
+                "available": voice.available(),
+                "model": voice.model_name() if voice.available() else None,
+                "reason": voice.reason(),
+            },
+            "speak": {"available": True, "engine": "browser"},
+            "language": data_mod.language() or None,
         },
-        # Steps 4 and 5 wire the rest. Declared now so the UI can grey them
-        # honestly instead of pretending a dead button works.
-        "stage": 3,
-        "stage_note": "graph, search and conversation — voice and memory are not wired yet",
+        # Step 5 wires the rest. Declared so the UI can grey what it must
+        # instead of pretending a dead button works.
+        "stage": 4,
+        "stage_note": "graph, search, conversation and voice — memory is not wired yet",
     }
 
 
@@ -184,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _body(self) -> dict[str, object]:
+    def _body(self, cap: int = MAX_BODY_BYTES) -> dict[str, object]:
         """The JSON body of a POST. Missing or empty is an empty dict.
 
         The body is read before anything is validated. On a keep-alive
@@ -198,10 +212,10 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise ValueError("Content-Length is not a number") from None
 
-        if length > MAX_BODY_BYTES:
+        if length > cap:
             # Too big to drain, so this connection does not get reused.
             self.close_connection = True
-            raise ValueError(f"body over the {MAX_BODY_BYTES // 1024} kB cap")
+            raise ValueError(f"body over the {cap // 1024} kB cap")
 
         raw = self.rfile.read(length) if length > 0 else b""
 
@@ -259,6 +273,9 @@ class Handler(BaseHTTPRequestHandler):
             if route in ("/api/ask", "/api/brief", "/api/plan"):
                 self._think(route)
                 return
+            if route == "/api/listen":
+                self._listen()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -291,6 +308,41 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._json(answer.to_dict())
+
+    def _listen(self) -> None:
+        """A recording in, the words in it out. Nothing is kept.
+
+        The audio arrives base64'd inside the ordinary JSON envelope rather
+        than as a multipart upload, so the one content-type rule that keeps
+        cross-site posts out covers this route too, with no exception to
+        reason about.
+        """
+        try:
+            body = self._body(MAX_AUDIO_BODY_BYTES)
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        raw = body.get("audio")
+        if not isinstance(raw, str) or not raw:
+            self._fail(HTTPStatus.BAD_REQUEST, "expected base64 WAV in an 'audio' field")
+            return
+        try:
+            audio = base64.b64decode(raw, validate=True)
+        except (ValueError, binascii.Error):
+            self._fail(HTTPStatus.BAD_REQUEST, "'audio' is not valid base64")
+            return
+
+        try:
+            heard = voice.transcribe(audio)
+        except voice.VoiceUnavailable as exc:
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+            return
+        except voice.VoiceFailed as exc:
+            self._fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            return
+
+        self._json(heard)
 
     def _api(self, route: str, query: dict[str, list[str]]) -> None:
         if route == "/api/health":
@@ -391,7 +443,9 @@ def main() -> int:
     note = llm.cli_note()
     if note:
         print(f"  note     {note}")
-    print(f"  voice    {caps['voice']['reason'] or 'ElevenLabs key set'}")
+    listen = caps["voice"]["listen"]
+    print(f"  listen   {listen['reason'] or listen['model'] + ' (free — spends no TTS quota)'}")
+    print(f"  speak    this machine's own voices, in the browser")
     print(f"\n  JARVIS on http://{host}:{port}   (ctrl-c to stop)\n")
 
     if not UI_DIR.is_dir():

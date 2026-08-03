@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +83,12 @@ STOPWORDS = {
     "sem", "ser", "seu", "sua", "são", "só", "também", "tem", "ter", "teu",
     "tua", "um", "uma", "você", "vocês",
 }
+# Tokens arrive accent-folded, so the list has to be folded to match. Written
+# accented above because that is how the words are spelled.
+STOPWORDS = {
+    "".join(c for c in unicodedata.normalize("NFD", w) if not unicodedata.combining(c))
+    for w in STOPWORDS
+}
 
 # Technical drawings carry their real content in a title block, not in prose.
 # These lift it out so a drawing is searchable by weight, material and date
@@ -132,6 +139,27 @@ H1_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*$", re.MULTILINE)
 # index with meaningless fragments and lets them outweigh real terms.
 TOKEN_RE = re.compile(r"[0-9a-zà-öø-ÿ][0-9a-zà-öø-ÿ'&.\-]*")
 CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _fold(text: str) -> str:
+    """Lowercase, and strip accents — one character in, one character out.
+
+    Length-preserving on purpose. _snippet finds an offset in the folded text
+    and then slices the *original* with it, so the two have to stay aligned;
+    a plain NFD normalise would shift every index after the first accent.
+    Anything that will not fold to a single character is left as it is.
+    """
+    if text.isascii():
+        return text.lower()
+    out = []
+    for ch in text:
+        low = ch.lower()
+        if len(low) != 1:
+            low = ch
+        base = "".join(c for c in unicodedata.normalize("NFD", low)
+                       if not unicodedata.combining(c))
+        out.append(base if len(base) == 1 else low)
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +635,20 @@ class Vault:
 
     @staticmethod
     def _tokens(text: str) -> list[str]:
-        return TOKEN_RE.findall(text.lower())
+        """Words, lowercased and stripped of accents.
+
+        TOKEN_RE keeps accented letters so that "peças" stays one word instead
+        of splitting into "pe" and "as". Folding happens after, so the index
+        and the query both store "pecas": a question typed without accents
+        finds a note written with them, and the other way round.
+
+        This is not cosmetic. Dictation gets accents right — scribe_v1 hears
+        "qual é a política de depósito" — while a keyboard often does not, and
+        the prefix matcher that lets "deposito" find "deposit" cannot see past
+        the "ó" in "depósito". Before folding, asking that question out loud
+        returned nothing at all while typing it unaccented worked.
+        """
+        return TOKEN_RE.findall(_fold(text))
 
     def search(self, query: str, limit: int = 8, types: set[str] | None = None) -> list[Hit]:
         """BM25 with a small hub bonus. Returns notes, scores and snippets."""
@@ -675,7 +716,9 @@ class Vault:
         flat = re.sub(r"\s+", " ", note.text).strip()
         if not flat:
             return note.warning or "(no text)"
-        lowered = flat.lower()
+        # Folded so the accent-folded search terms can be counted in it, and
+        # length-preserving so the offsets still index into `flat`.
+        lowered = _fold(flat)
         best, best_score = 0, -1
         step = max(1, width // 3)
         for start in range(0, max(1, len(flat) - width + step), step):

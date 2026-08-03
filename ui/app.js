@@ -280,7 +280,8 @@ function renderVaultStats() {
     ["links", String(state.graph.edges.length)],
     ["indexed in", `${state.graph.build_seconds}s`],
     ["model", h.model.available ? h.model.name : "missing"],
-    ["voice", h.voice.available ? "elevenlabs" : "missing"],
+    ["listen", h.voice.listen.available ? h.voice.listen.model : "missing"],
+    ["speak", window.speechSynthesis ? "this machine" : "missing"],
   ];
   for (const [key, value] of rows) {
     const dt = document.createElement("dt");
@@ -419,6 +420,9 @@ async function think(kind, payload, label) {
 
   renderAnswer(res);
   stopThinking();
+  // After stopThinking, so its setReactor("idle") cannot land on top of the
+  // speaking state that speak() sets when the utterance actually starts.
+  speak(res.answer);
 }
 
 function stopThinking() {
@@ -506,6 +510,252 @@ function renderAnswer(res) {
 
 $("btn-brief").addEventListener("click", () => think("brief", {}, "brief"));
 $("btn-plan").addEventListener("click", () => think("plan", { goal: input.value }, input.value));
+
+// ── voice ─────────────────────────────────────────────────────────────────
+//
+// Two halves, and they are not symmetrical.
+//
+// Speaking is done here, by the browser, out of the voices already installed
+// on this machine. That is free, has no quota, works offline, and the audio
+// never leaves the room.
+//
+// Listening goes to the server, which sends it to ElevenLabs. Their
+// speech-to-text costs nothing on this account, and doing it there means the
+// key stays server-side and this works in Firefox too — the browser's own
+// SpeechRecognition is Chrome-only and ships the recording to Google.
+//
+// We capture raw PCM and encode a WAV ourselves rather than use MediaRecorder,
+// which produces webm/opus. The docs promise "all major formats" without
+// naming that one, and a format proven to work beats a format assumed to.
+
+const VOICE = {
+  sampleRate: 16000,      // what speech-to-text wants; smaller upload too
+  maxSeconds: 30,
+  mute: false,
+  starting: false,        // set synchronously, so a second click cannot race in
+  recording: null,        // the live capture chain, or null
+};
+
+// -- speaking --------------------------------------------------------------
+
+function speechVoice() {
+  const wanted = (state.health?.voice?.language || "").toLowerCase();
+  const voices = window.speechSynthesis?.getVoices() || [];
+  if (!voices.length) return null;
+  if (!wanted) return null;                      // let the browser choose
+  const tag = wanted.replace("_", "-");
+  const lang = tag.split("-")[0];
+  return voices.find((v) => v.lang.toLowerCase().replace("_", "-") === tag)
+      || voices.find((v) => v.lang.toLowerCase().startsWith(lang))
+      || null;
+}
+
+function speak(text) {
+  if (VOICE.mute || !window.speechSynthesis || !text) return;
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(
+    // Citation ids are for the eye, not the ear: "demo/notes/deposit-policy.md"
+    // read aloud is unbearable. The chips below the answer carry them.
+    text.replace(/\[[^\]\n]{3,120}\]/g, "").replace(/[*_#`]/g, "").replace(/\s+/g, " ").trim()
+  );
+  const voice = speechVoice();
+  if (voice) { utterance.voice = voice; utterance.lang = voice.lang; }
+
+  utterance.onstart = () => { state.level = 0.5; setReactor("speaking", voice?.name || ""); };
+  utterance.onend = utterance.onerror = () => { state.level = 0; setReactor("idle"); };
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopSpeaking() {
+  window.speechSynthesis?.cancel();
+  if (state.reactor === "speaking") { state.level = 0; setReactor("idle"); }
+}
+
+// getVoices() is empty until the list loads, so re-read it when it arrives.
+window.speechSynthesis?.addEventListener?.("voiceschanged", () => {});
+
+// -- listening -------------------------------------------------------------
+
+function encodeWav(samples, rate) {
+  // 16-bit mono PCM in a 44-byte RIFF header. Nothing exotic — this is the
+  // format the server is proven to transcribe.
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const ascii = (at, s) => { for (let i = 0; i < s.length; i++) view.setUint8(at + i, s.charCodeAt(i)); };
+
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  ascii(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);         // PCM header size
+  view.setUint16(20, 1, true);          // format: PCM
+  view.setUint16(22, 1, true);          // channels: mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);   // byte rate
+  view.setUint16(32, 2, true);          // block align
+  view.setUint16(34, 16, true);         // bits per sample
+  ascii(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+
+  for (let i = 0; i < samples.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+  }
+  return new Uint8Array(buffer);
+}
+
+function toBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/** Shut a capture chain down and give the microphone back. Idempotent. */
+function releaseChain(rec) {
+  if (!rec || rec.done) return;
+  rec.done = true;
+  rec.node.onaudioprocess = null;
+  try { rec.source.disconnect(); rec.node.disconnect(); } catch { /* already gone */ }
+  // Without this the tab keeps showing the recording indicator and the
+  // microphone stays live — in a tool whose whole premise is that audio does
+  // not leave the room, a hot mic is the worst thing to leak.
+  rec.stream.getTracks().forEach((t) => t.stop());
+  rec.ctx.close().catch(() => {});
+}
+
+async function startListening() {
+  // Synchronously, before any await. getUserMedia takes seconds the first time
+  // while the permission prompt is up, and the button gives no feedback until
+  // it resolves — so without this a second click builds a second capture chain
+  // and the first becomes unreachable, its microphone never released.
+  if (VOICE.recording || VOICE.starting) return;
+  if (thinking) {
+    hint("Finish the current question first.");
+    return;
+  }
+  VOICE.starting = true;
+  stopSpeaking();
+
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: VOICE.sampleRate,
+    });
+    const source = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    // rate is read now, not at stop time: closing the context first would make
+    // it unreadable, and the WAV header has to state the truth.
+    const rec = { stream, ctx, node, source, rate: ctx.sampleRate,
+                  chunks: [], frames: 0, done: false };
+
+    node.onaudioprocess = (event) => {
+      if (rec.done) return;
+      // If this chain is no longer the live one it is an orphan: let it bury
+      // itself rather than keep a microphone open and a buffer growing.
+      if (VOICE.recording !== rec) { releaseChain(rec); return; }
+
+      const block = new Float32Array(event.inputBuffer.getChannelData(0));
+      rec.chunks.push(block);
+      rec.frames += block.length;
+
+      let peak = 0;
+      for (const v of block) peak = Math.max(peak, Math.abs(v));
+      state.level = Math.min(1, peak * 3);
+
+      if (rec.frames > VOICE.sampleRate * VOICE.maxSeconds) stopListening();
+    };
+
+    source.connect(node);
+    node.connect(ctx.destination);
+    VOICE.recording = rec;
+    $("btn-mic").setAttribute("aria-pressed", "true");
+    setReactor("listening", "click Mic again when done");
+  } catch (err) {
+    // Anything at all going wrong after the microphone opened must still hand
+    // it back — the failure paths are exactly where a hot mic gets forgotten.
+    stream?.getTracks().forEach((t) => t.stop());
+    alert("warn", "Microphone",
+      err?.name === "NotAllowedError"
+        ? "Permission for the microphone was refused. Allow it in the address bar and try again."
+        : `The microphone could not be opened. ${err}`);
+  } finally {
+    VOICE.starting = false;
+  }
+}
+
+async function stopListening() {
+  const rec = VOICE.recording;
+  if (!rec || rec.done) return;
+  VOICE.recording = null;
+  releaseChain(rec);
+
+  $("btn-mic").setAttribute("aria-pressed", "false");
+  state.level = 0;
+
+  const total = rec.chunks.reduce((n, c) => n + c.length, 0);
+  if (total < rec.rate * 0.4) {
+    setReactor("idle");
+    hint("That was too short — hold the question a moment longer.");
+    return;
+  }
+
+  const samples = new Float32Array(total);
+  let at = 0;
+  for (const chunk of rec.chunks) { samples.set(chunk, at); at += chunk.length; }
+
+  setReactor("thinking", "transcribing");
+  hint("Transcribing…");
+  let heard;
+  try {
+    heard = await fetch("/api/listen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio: toBase64(encodeWav(samples, rec.rate)) }),
+    }).then((r) => r.json());
+  } catch (err) {
+    setReactor("idle");
+    alert("crit", "Offline", `The JARVIS server is not answering. ${err}`);
+    return;
+  }
+
+  if (heard.error) {
+    setReactor("idle");
+    hint(heard.error);
+    alert("warn", "Microphone", heard.error);
+    return;
+  }
+
+  input.value = heard.text;
+
+  // A typed question could have been sent while we were transcribing, and
+  // think() refuses silently when one is already running. Say so, rather than
+  // leaving the reactor reading "transcribing" until the other answer lands
+  // and gets mistaken for a reply to this one.
+  if (thinking) {
+    setReactor("idle");
+    hint(`Heard "${heard.text}" — a question was already running, so it was not sent. `
+       + `It is in the box; press Enter when the other one finishes.`);
+    return;
+  }
+  think("ask", { q: heard.text }, heard.text);
+}
+
+$("btn-mic").addEventListener("click", () => {
+  if (VOICE.recording) stopListening(); else startListening();
+});
+
+$("btn-mute").addEventListener("click", () => {
+  VOICE.mute = !VOICE.mute;
+  $("btn-mute").setAttribute("aria-pressed", String(VOICE.mute));
+  $("btn-mute").textContent = VOICE.mute ? "Unmute" : "Mute";
+  if (VOICE.mute) stopSpeaking();
+});
 
 // ── stage gating: a control that cannot work says which step wires it ─────
 
