@@ -1143,6 +1143,46 @@ async function stopListening() {
   think("ask", { q: heard.text }, heard.text);
 }
 
+// ── reindexar ─────────────────────────────────────────────────────────────
+//
+// /api/reindex has existed since stage 1 and nothing on the page ever called
+// it, so changing which folders JARVIS reads meant restarting the server. It
+// re-reads .env first, which is the whole point: edit JARVIS_VAULTS, press
+// this, and the graph is your folders — no terminal.
+
+async function reindex() {
+  if (reindex.busy) return;
+  reindex.busy = true;
+  const btn = $("btn-reindex");
+  const was = btn.textContent;
+  btn.textContent = "lendo…";
+  btn.disabled = true;
+
+  let res;
+  try {
+    res = await fetch("/api/reindex", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).then((r) => r.json());
+  } catch (err) {
+    alert("crit", "Offline", `O servidor não respondeu. ${err}`);
+  }
+  btn.textContent = was;
+  btn.disabled = false;
+  reindex.busy = false;
+  if (!res) return;
+
+  if (res.error) { alert("warn", "Reindexar", res.error); return; }
+
+  // Everything downstream reads from the payload, so pull it fresh rather
+  // than patching counts by hand and letting the two drift.
+  await boot();
+  hint(`${res.notes} notas lidas em ${res.seconds}s.`);
+}
+
+$("btn-reindex").addEventListener("click", reindex);
+
 $("btn-mic").addEventListener("click", () => {
   if (VOICE.recording) stopListening(); else startListening(false);
 });
