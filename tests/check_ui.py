@@ -122,6 +122,23 @@ assert "speechSynthesis?.speaking" in app, "nothing stops it hearing its own ans
 assert "detectSpeech(rec.vad" in app, "audio would be uploaded without a speech check"
 print("always-on listening: local detection, wake word, and no self-triggering.")
 
+# -- skills and standing instructions ----------------------------------------
+#
+# The panel exists mostly to show failures: a skill file with no description
+# never matches anything, and without this you would believe an instruction
+# was in effect when it was not.
+assert "async function renderSkills" in app
+assert '"/api/skills"' in app
+assert "renderSkills()" in app, "the skills panel is never populated at boot"
+for element in ("skill-list", "skill-now", "skill-note"):
+    assert f'id="{element}"' in html, element
+assert "skill.problem" in app, "a broken skill would be listed as if it worked"
+# An influence you cannot see is one you cannot check — same argument as the
+# citations, and the answer line has to carry it.
+assert "res.skills" in app and "res.instructions" in app, \
+    "the answer never says which skills shaped it"
+print("skills panel wired, broken ones surfaced, and influence is visible.")
+
 # -- history and conversation ------------------------------------------------
 #
 # Two things ride on this. Looking up what you asked last week, and a question

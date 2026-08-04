@@ -26,7 +26,8 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import brain, data as data_mod, embed, llm, memory, notebook, tools, voice
+from agent import (brain, data as data_mod, embed, llm, memory, notebook,
+                   skills, tools, voice)
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -136,6 +137,10 @@ def capabilities() -> dict[str, object]:
         # default, and on the page rather than in a config file precisely
         # because "it can read your Drive" should never be a quiet setting.
         "tools": tools.state(),
+        # How you work, as opposed to what is true. Reported here because a
+        # skill that silently failed to load is an instruction you believe is
+        # in effect and is not.
+        "skills": skills.state(),
         "stage": 5,
         "stage_note": "",
     }
@@ -676,6 +681,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/tools":
             self._json(tools.state())
+            return
+
+        if route == "/api/skills":
+            self._json(skills.state())
             return
 
         if route == "/api/history":

@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 # Cheap and offline first, so a broken build fails in seconds rather than
 # after two minutes of waiting on the model.
 FAST = ["check_ui.py", "test_tools.py", "test_fold.py", "test_memory.py",
-        "test_keepalive.py", "test_file.py", "test_notebook.py"]
+        "test_keepalive.py", "test_file.py", "test_notebook.py", "test_skills.py"]
 SLOW = ["test_llm.py", "test_brain.py", "test_semantic.py"]
 NODE = ["test_mic.mjs"]
 

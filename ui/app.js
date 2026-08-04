@@ -30,6 +30,7 @@ const state = {
   // one; the server hands back an id and this holds it until you clear it.
   thread: "",
   tools: null,
+  skills: null,
 };
 
 // ── alerts ────────────────────────────────────────────────────────────────
@@ -84,6 +85,7 @@ async function boot() {
   renderHubs();
   renderBrains();
   renderTools();
+  renderSkills();
   renderVaultStats();
   rotateExamples();
   applyStageGating();
@@ -667,9 +669,17 @@ function renderAnswer(res) {
   const recalled = res.recalled?.length
     ? ` · ${res.recalled.length} remembered`
     : "";
+  // Same argument for skills and standing instructions: something that shaped
+  // the answer and that you cannot see is something you cannot check.
+  const shaped = res.skills?.length ? ` · ${res.skills.join(", ")}` : "";
+  const standing = res.instructions?.length ? " · JARVIS.md" : "";
   meta.textContent = `${res.usage?.model || "model"} · read ${res.considered.length} notes`
-                   + `${recalled} · ${res.seconds}s`;
-  meta.title = res.recalled?.length ? res.recalled.join("\n") : "";
+                   + `${recalled}${shaped}${standing} · ${res.seconds}s`;
+  meta.title = [
+    ...(res.recalled || []),
+    ...(res.skills || []).map((s) => `habilidade: ${s}`),
+    ...(res.instructions || []).map((s) => `instruções: ${s}`),
+  ].join("\n");
   head.append(kind, meta);
 
   const body = document.createElement("div");
@@ -1240,6 +1250,66 @@ $("btn-wake").addEventListener("click", () => {
 // keeping. That is only acceptable if you can see everything it decided and
 // throw any of it away — so this panel is not a nicety, it is the other half
 // of letting it write at all.
+
+// ── habilidades ───────────────────────────────────────────────────────────
+//
+// The vault holds what is true; a skill holds how you work. That an invoice is
+// R$ 6.226,95 belongs in a note — that you always check the borderô before
+// chasing a supplier is not in any document, and until now had to be retyped
+// into every question.
+//
+// The panel exists mostly to show failures. A skill file with no `description`
+// never matches anything, and without this you would believe an instruction
+// was in effect when it was not.
+
+async function renderSkills(payload) {
+  const list = $("skill-list");
+  if (!list) return;
+  let data = payload;
+  if (!data) {
+    try {
+      data = await fetch("/api/skills").then((r) => r.json());
+    } catch {
+      return;                          // the panel simply stays as it was
+    }
+  }
+  if (data.error) { alert("warn", "Habilidades", data.error); return; }
+  state.skills = data;
+
+  const now = $("skill-now");
+  if (now) now.textContent = data.skills.length ? `${data.skills.length}` : "nenhuma";
+
+  list.replaceChildren();
+  for (const skill of data.skills) {
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "brain-row";
+    row.setAttribute("aria-pressed", String(!!skill.always));
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = skill.name;
+
+    const note = document.createElement("span");
+    note.className = "brain-note";
+    note.textContent = skill.problem
+      ? "⚠ " + skill.problem
+      : (skill.always ? "sempre · " : "") + (skill.description || "").slice(0, 60);
+    row.title = skill.path;
+
+    row.append(name, note);
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+
+  const note = $("skill-note");
+  if (note) {
+    const ins = data.instructions || {};
+    note.textContent = ins.sources?.length
+      ? `${ins.file} em ${ins.sources.length} lugar(es), ${ins.chars} caracteres, em toda resposta.`
+      : `Nenhum ${ins.file || "JARVIS.md"}. Crie um na raiz do projeto para instruções permanentes.`;
+  }
+}
 
 // ── histórico ─────────────────────────────────────────────────────────────
 //

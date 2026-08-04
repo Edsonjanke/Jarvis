@@ -21,13 +21,13 @@ from __future__ import annotations
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 if __package__ in (None, ""):  # allow `python agent/brain.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import data as data_mod, embed, llm, memory, notebook
+from agent import data as data_mod, embed, llm, memory, notebook, skills
 from agent.vault import Note, Vault
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,11 @@ class Answer:
     recalled: list[str]                     # remembered facts put in the prompt
     usage: dict[str, object]
     seconds: float
+    # Which skills and standing instructions shaped this answer. Reported for
+    # the same reason the citations are: an influence you cannot see is one
+    # you cannot check.
+    skills: list[str] = field(default_factory=list)
+    instructions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -71,6 +76,8 @@ class Answer:
             ],
             "considered": self.considered,
             "recalled": self.recalled,
+            "skills": self.skills,
+            "instructions": self.instructions,
             "usage": self.usage,
             "seconds": round(self.seconds, 2),
         }
@@ -306,6 +313,23 @@ def _run(vault: Vault, kind: str, question: str, system: str,
         language=f"Answer in {lang}." if lang else _FOLLOW_QUESTION
     )
 
+    # Standing instructions and skills go in the SYSTEM prompt, not the user
+    # one, and that placement is the point: they are how to work, not what is
+    # true. A note is evidence and gets cited; an instruction is a rule and
+    # never should be. Putting them here keeps that line where the ground
+    # rules already are, and keeps them out of anything cited() can see.
+    standing, instruction_sources = skills.instructions()
+    if standing:
+        system += ("\n\nSTANDING INSTRUCTIONS — from the person who owns these notes. "
+                   "They apply to every answer. They are not evidence and are never "
+                   "cited.\n\n" + standing)
+
+    skill_block, skill_names = skills.block(question)
+    if skill_block:
+        system += ("\n\nSKILLS — how this person works, for the kind of thing being "
+                   "asked. Also not evidence: follow them, do not quote or cite "
+                   "them.\n\n" + skill_block)
+
     # Remembered facts go in their own section, above the notes and clearly not
     # part of them. They have no note id, so they can never be cited — cited()
     # only credits ids that exist in the index, and that stays true.
@@ -347,6 +371,8 @@ def _run(vault: Vault, kind: str, question: str, system: str,
         citations=cited(vault, text, considered),
         considered=considered,
         recalled=[f.text for f in recalled],
+        skills=skill_names,
+        instructions=instruction_sources,
         usage=usage,
         seconds=time.time() - started,
     )
