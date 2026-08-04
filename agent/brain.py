@@ -27,7 +27,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # allow `python agent/brain.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import data as data_mod, embed, llm, memory
+from agent import data as data_mod, embed, llm, memory, notebook
 from agent.vault import Note, Vault
 
 # ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ the single biggest unknown."""
 # ---------------------------------------------------------------------------
 
 def _run(vault: Vault, kind: str, question: str, system: str,
-         notes: list[Note], user: str) -> Answer:
+         notes: list[Note], user: str, thread: str = "") -> Answer:
     started = time.time()
     block, considered = context(notes)
     if not considered:
@@ -320,6 +320,25 @@ def _run(vault: Vault, kind: str, question: str, system: str,
             + f"\n\n{prompt}"
         )
 
+    # Earlier turns of this same conversation, above everything else, so
+    # "and of those, which are PARINOX?" has a "those" to refer to. Like
+    # REMEMBERED these carry no note id and therefore cannot be cited — the
+    # guarantee that a citation names a real note is unaffected.
+    #
+    # Above REMEMBERED rather than below: what was just said in this thread is
+    # more immediate than something learned weeks ago, and when the two
+    # disagree the model should see the recent one in the context of the old,
+    # not the reverse.
+    earlier = notebook.conversation_block(thread)
+    if earlier:
+        prompt = (
+            "CONVERSATION — what was already asked and answered in this session.\n"
+            "Context only: not notes, not citable, and possibly out of date if the\n"
+            "vault changed since. A follow-up question refers to this.\n\n"
+            + earlier
+            + f"\n\n{prompt}"
+        )
+
     text, usage = llm.complete(system, prompt)
     return Answer(
         kind=kind,
@@ -333,14 +352,15 @@ def _run(vault: Vault, kind: str, question: str, system: str,
     )
 
 
-def ask(vault: Vault, question: str) -> Answer:
+def ask(vault: Vault, question: str, thread: str = "") -> Answer:
     question = question.strip()
     if not question:
         raise llm.LLMFailed("no question given")
 
     notes = retrieve(vault, question)
     if notes:
-        return _run(vault, "ask", question, _ASK_SYSTEM, notes, f"QUESTION\n\n{question}")
+        return _run(vault, "ask", question, _ASK_SYSTEM, notes,
+                    f"QUESTION\n\n{question}", thread)
 
     # Search is lexical, so a question can miss everything — a word the notes
     # never use, or a question in one language about notes in another. Raising
@@ -353,6 +373,7 @@ def ask(vault: Vault, question: str) -> Answer:
         "Searching the vault for this matched no note at all. The notes below are not "
         "results — they are simply its most connected ones. Say plainly, in one line, that "
         "nothing here answers the question, then say briefly what the vault does cover.",
+        thread,
     )
 
 

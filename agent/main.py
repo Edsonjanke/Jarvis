@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import brain, data as data_mod, embed, llm, memory, tools, voice
+from agent import brain, data as data_mod, embed, llm, memory, notebook, tools, voice
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -365,6 +365,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/tools":
                 self._tools()
                 return
+            if route == "/api/history/forget":
+                self._forget_turn()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -380,10 +383,15 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
+        # The conversation this belongs to. The page sends one back to carry
+        # the thread on; an absent or unknown one simply starts a new
+        # conversation, which is the right thing on a fresh page load.
+        thread = str(body.get("thread") or "")[:64]
+
         vault = STORE.get()
         try:
             if route == "/api/ask":
-                answer = brain.ask(vault, str(body.get("q") or ""))
+                answer = brain.ask(vault, str(body.get("q") or ""), thread)
             elif route == "/api/plan":
                 answer = brain.plan(vault, str(body.get("goal") or ""))
             else:
@@ -396,7 +404,12 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(HTTPStatus.BAD_GATEWAY, str(exc))
             return
 
-        self._json(answer.to_dict())
+        # Recorded before the reply goes out, so the id and the thread can go
+        # with it — the page needs both to continue the conversation. It never
+        # raises: a history that cannot be written is a lost note, not a lost
+        # answer, and the answer is already in hand.
+        turn = notebook.record(answer, thread)
+        self._json({**answer.to_dict(), "turn": turn.id, "thread": turn.thread})
 
         # Deciding what was worth remembering is a second model call, so it
         # happens after the answer has already gone out, on its own thread.
@@ -466,6 +479,87 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json({**result, "brains": llm.brains()})
 
+    # The one route that hands back a file off your disk, byte for byte.
+    #
+    # /api/note gives the text JARVIS extracted. That is what it can read, and
+    # for 143 PDFs of invoices and purchase orders it is not the same thing as
+    # the document: the extractor flattens a layout into a stream of words, and
+    # the two it cannot read at all — a scan, an encrypted report — come back
+    # empty. So this exists to show you the actual page.
+    #
+    # Serving files over HTTP is where a hole gets opened, so the rule is
+    # narrow and stated once: the ONLY thing a caller may supply is a note id.
+    # Not a path, not a fragment of one. The path comes from the index, which
+    # was built by walking the roots you configured. Anything not in the index
+    # does not exist as far as this route is concerned, which is what makes
+    # ../../.env and C:\Windows\... unreachable — they are not ids.
+    #
+    # The containment check underneath is belt and braces for the case the
+    # index cannot rule out: a junction or symlink inside your vault that
+    # resolved somewhere else between indexing and now.
+    FILE_TYPES = {
+        ".pdf": "application/pdf",
+        ".md": "text/plain; charset=utf-8",
+        ".markdown": "text/plain; charset=utf-8",
+        ".mdx": "text/plain; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+        ".text": "text/plain; charset=utf-8",
+    }
+    MAX_FILE_BYTES = 32 * 1024 * 1024
+
+    def _file(self, note_id: str) -> None:
+        vault = STORE.get()
+        note = vault.notes.get(note_id)
+        if note is None:
+            self._fail(HTTPStatus.NOT_FOUND, f"no note with id {note_id!r}")
+            return
+
+        try:
+            path = Path(note.path).resolve()
+        except OSError as exc:
+            self._fail(HTTPStatus.NOT_FOUND, f"cannot resolve the file: {exc}")
+            return
+
+        # Still inside a configured root, checked now rather than trusted from
+        # index time.
+        roots = [r.path.resolve() for r in vault.roots]
+        if not any(path == root or root in path.parents for root in roots):
+            self._fail(HTTPStatus.FORBIDDEN, "that file is outside your vault")
+            return
+
+        ctype = self.FILE_TYPES.get(path.suffix.lower())
+        if ctype is None:
+            self._fail(HTTPStatus.FORBIDDEN, f"{path.suffix} is not a type JARVIS serves")
+            return
+
+        try:
+            if path.stat().st_size > self.MAX_FILE_BYTES:
+                self._fail(HTTPStatus.FORBIDDEN, "file is too large to open here")
+                return
+            raw = path.read_bytes()
+        except OSError as exc:
+            self._fail(HTTPStatus.NOT_FOUND, f"cannot read the file: {exc}")
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # inline so the browser's own PDF viewer opens it in a tab. The
+        # filename is quoted and stripped of quotes and newlines, because it
+        # comes from your disk and ends up in a header.
+        safe = path.name.replace('"', "").replace("\r", "").replace("\n", "")
+        self.send_header("Content-Disposition", f'inline; filename="{safe}"')
+        # This response is a document, not the app. Nothing in it may run or
+        # reach back out — a PDF can carry JavaScript.
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; object-src 'none'; script-src 'none'; "
+                         "base-uri 'none'; form-action 'none'; sandbox")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(raw)
+
     def _tools(self) -> None:
         """Switch tools on or off by name.
 
@@ -487,6 +581,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         tools.allow(names)
         self._json(tools.state())
+
+    def _forget_turn(self) -> None:
+        """Delete one recorded turn, or a whole conversation.
+
+        History quotes your notes back at you — an answer about accounts
+        payable contains your accounts payable. Being able to throw a piece of
+        it away is part of it being acceptable to keep at all, which is the
+        same argument the memory panel already makes.
+        """
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        thread_id = str(body.get("thread") or "")
+        if thread_id:
+            gone = notebook.forget_thread(thread_id)
+            self._json({"ok": gone > 0, "removed": gone})
+            return
+
+        turn_id = str(body.get("id") or "")
+        if not turn_id:
+            self._fail(HTTPStatus.BAD_REQUEST, "give an id or a thread")
+            return
+        self._json({"ok": notebook.forget(turn_id), "removed": 1})
 
     def _forget(self) -> None:
         """Delete one remembered fact. The only destructive route there is."""
@@ -534,6 +654,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(payload)
             return
 
+        if route == "/api/file":
+            self._file((query.get("id") or [""])[0])
+            return
+
         if route == "/api/path":
             a = (query.get("a") or [""])[0]
             b = (query.get("b") or [""])[0]
@@ -552,6 +676,29 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/tools":
             self._json(tools.state())
+            return
+
+        if route == "/api/history":
+            # ?thread= reads one conversation in reading order; otherwise the
+            # most recent turns, newest first, optionally filtered by ?q=.
+            thread_id = (query.get("thread") or [""])[0]
+            if thread_id:
+                self._json({
+                    "thread": thread_id,
+                    "turns": [t.to_dict() for t in
+                              notebook.thread(thread_id, limit=200)],
+                })
+                return
+            try:
+                limit = max(1, min(200, int((query.get("limit") or ["50"])[0])))
+            except ValueError:
+                limit = 50
+            self._json({
+                "turns": [t.to_dict() for t in
+                          notebook.turns(limit=limit, query=(query.get("q") or [""])[0])],
+                "threads": notebook.threads(),
+                "where": str(data_mod.ROOT / "history"),
+            })
             return
 
         if route == "/api/memory":

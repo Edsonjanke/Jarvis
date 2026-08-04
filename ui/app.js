@@ -26,6 +26,10 @@ const state = {
   pathAnchor: null,
   reactor: "idle",
   level: 0,
+  // The conversation in progress. Empty means the next question starts a new
+  // one; the server hands back an id and this holds it until you clear it.
+  thread: "",
+  tools: null,
 };
 
 // ── alerts ────────────────────────────────────────────────────────────────
@@ -87,6 +91,11 @@ async function boot() {
 
 // ── inspector ─────────────────────────────────────────────────────────────
 
+// What /api/file will hand back. Kept in step with FILE_TYPES in main.py —
+// the server is the one that decides, this only avoids offering a link that
+// would come back 403.
+const OPENABLE = new Set(["pdf", "md", "markdown", "mdx", "txt", "text"]);
+
 async function openNote(id) {
   state.focused = id;
   graph.setFocus(id);
@@ -108,6 +117,27 @@ async function openNote(id) {
   $("note-kind").textContent = note.type;
   $("note-title").textContent = note.title;
   $("note-path").textContent = `${note.root}/${note.rel}`;
+
+  // The document itself, not the text JARVIS pulled out of it. For a PDF
+  // invoice those are very different things — the extractor flattens a layout
+  // into a stream of words, and for a scan or an encrypted file it gets
+  // nothing at all. Opening the page is the answer to "but what does it
+  // actually say".
+  const open = $("note-open");
+  const ext = (note.rel || "").slice(((note.rel || "").lastIndexOf(".") + 1) || Infinity).toLowerCase();
+  if (OPENABLE.has(ext)) {
+    open.hidden = false;
+    open.href = `/api/file?id=${encodeURIComponent(id)}`;
+    open.textContent = ext === "pdf" ? "Abrir o PDF" : "Abrir o arquivo";
+    // A note whose text came back empty is exactly the one worth opening,
+    // so say so rather than leaving the reader to wonder.
+    open.title = note.warning
+      ? `${note.warning} — abra o arquivo para ver`
+      : `abrir ${note.rel} numa aba nova`;
+  } else {
+    open.hidden = true;
+    open.removeAttribute("href");
+  }
 
   const meta = $("note-meta");
   meta.replaceChildren();
@@ -574,7 +604,10 @@ async function think(kind, payload, label) {
     res = await fetch(`/api/${kind}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      // The conversation so far. Sending it is what makes "and of those,
+      // which are PARINOX?" answerable — without it every question is asked
+      // of a JARVIS that has never spoken to you before.
+      body: JSON.stringify({ ...payload, thread: state.thread || "" }),
     }).then((r) => r.json());
   } catch (err) {
     $("results").hidden = true;
@@ -587,6 +620,10 @@ async function think(kind, payload, label) {
     alert("warn", kind === "brief" ? "Brief" : kind === "plan" ? "Plan" : "Ask", res.error);
     return stopThinking();
   }
+
+  // Carry the thread on. The server starts a new one when we send none, so
+  // this is also how the very first question gets an id at all.
+  if (res.thread) { state.thread = res.thread; showThread(); }
 
   renderAnswer(res);
   stopThinking();
@@ -1204,6 +1241,133 @@ $("btn-wake").addEventListener("click", () => {
 // throw any of it away — so this panel is not a nicety, it is the other half
 // of letting it write at all.
 
+// ── histórico ─────────────────────────────────────────────────────────────
+//
+// Until this existed every question was an isolated call and the answer was
+// gone the moment it left the screen. Two things come out of keeping them.
+//
+// One: you can look up what you asked last week and compare. Two, and bigger:
+// a question can refer to the previous one. That is the difference between a
+// search box and a working session.
+//
+// It is also the most personal thing JARVIS stores — an answer about your
+// accounts payable quotes your accounts payable — so, like the memory panel,
+// every turn is visible and every turn can be thrown away.
+
+function showThread() {
+  const bar = $("thread-bar");
+  if (!bar) return;
+  bar.hidden = !state.thread;
+  const label = $("thread-label");
+  if (label) label.textContent = state.thread ? "conversa em andamento" : "";
+}
+
+function newThread() {
+  state.thread = "";
+  showThread();
+  hint("Conversa nova — a próxima pergunta começa do zero.");
+}
+
+async function showHistory(query = "") {
+  let res;
+  try {
+    res = await fetch(`/api/history?limit=60&q=${encodeURIComponent(query)}`)
+      .then((r) => r.json());
+  } catch (err) {
+    alert("crit", "Offline", `O servidor não respondeu. ${err}`);
+    return;
+  }
+  if (res.error) { alert("warn", "Histórico", res.error); return; }
+
+  const box = $("results");
+  box.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "answer-head";
+  const label = document.createElement("span");
+  label.className = "eyebrow";
+  label.textContent = "histórico";
+  const meta = document.createElement("span");
+  meta.className = "answer-meta";
+  meta.textContent = `${res.turns.length} turnos · ${res.threads.length} conversas · ${res.where}`;
+  head.append(label, meta);
+  box.appendChild(head);
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "history-search";
+  search.placeholder = "buscar no que você já perguntou…";
+  search.value = query;
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") showHistory(search.value);
+  });
+  box.appendChild(search);
+
+  if (!res.turns.length) {
+    const empty = document.createElement("div");
+    empty.className = "result snip";
+    empty.textContent = query
+      ? `Nada encontrado para "${query}".`
+      : "Nada ainda. Isto se enche conforme você pergunta.";
+    box.appendChild(empty);
+    box.hidden = false;
+    return;
+  }
+
+  for (const turn of res.turns) {
+    const row = document.createElement("div");
+    row.className = "turn";
+
+    const when = document.createElement("span");
+    when.className = "fact-when";
+    when.textContent = new Date(turn.when * 1000).toLocaleString();
+
+    const q = document.createElement("button");
+    q.type = "button";
+    q.className = "turn-q";
+    q.textContent = turn.question || `(${turn.kind})`;
+    q.title = "reabrir esta resposta";
+    q.addEventListener("click", () => {
+      renderAnswer(turn);
+      // Reopening a turn puts you back in its conversation, so the next
+      // question continues from there rather than starting over.
+      state.thread = turn.thread;
+      showThread();
+    });
+
+    const meta2 = document.createElement("span");
+    meta2.className = "turn-meta";
+    meta2.textContent = `${turn.citations.length} citações`
+      + (turn.usage?.output_tokens ? ` · ${turn.usage.output_tokens} tokens` : "")
+      + (turn.model ? ` · ${turn.model}` : "");
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "ghost fact-drop";
+    drop.textContent = "Apagar";
+    drop.title = "apagar este turno do histórico";
+    drop.addEventListener("click", async () => {
+      drop.disabled = true;
+      try {
+        const out = await fetch("/api/history/forget", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: turn.id }),
+        }).then((r) => r.json());
+        if (out.error) { alert("warn", "Histórico", out.error); drop.disabled = false; return; }
+        showHistory(query);
+      } catch (err) {
+        alert("crit", "Offline", `${err}`);
+        drop.disabled = false;
+      }
+    });
+
+    row.append(when, q, meta2, drop);
+    box.appendChild(row);
+  }
+  box.hidden = false;
+}
+
 async function showMemory() {
   let res;
   try {
@@ -1276,6 +1440,8 @@ async function showMemory() {
 }
 
 $("btn-memory").addEventListener("click", showMemory);
+$("btn-history").addEventListener("click", () => showHistory());
+$("btn-new-thread").addEventListener("click", newThread);
 
 $("btn-mute").addEventListener("click", () => {
   VOICE.mute = !VOICE.mute;

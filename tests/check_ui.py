@@ -122,6 +122,42 @@ assert "speechSynthesis?.speaking" in app, "nothing stops it hearing its own ans
 assert "detectSpeech(rec.vad" in app, "audio would be uploaded without a speech check"
 print("always-on listening: local detection, wake word, and no self-triggering.")
 
+# -- history and conversation ------------------------------------------------
+#
+# Two things ride on this. Looking up what you asked last week, and a question
+# being able to refer to the previous one — which is the whole difference
+# between a search box and a working session.
+assert "async function showHistory" in app
+assert '"/api/history' in app
+assert re.search(r'\$\("btn-history"\)\.addEventListener\("click"', app), "btn-history"
+assert 'id="btn-history"' in html
+for cls in ("turn", "turn-q", "turn-meta", "history-search", "thread-bar"):
+    assert f".{cls}" in css, cls
+# The thread must actually be sent, or every question is asked cold.
+assert "thread: state.thread" in app, "the conversation id never reaches the server"
+assert "state.thread = res.thread" in app, "the conversation id is never carried on"
+assert 'id="btn-new-thread"' in html and "function newThread" in app, \
+    "no way to start a fresh conversation"
+# History quotes your notes back at you. Deleting it has to be possible.
+assert '"/api/history/forget"' in app, "recorded turns cannot be deleted"
+print("history browsable and deletable, and the conversation carries on.")
+
+# -- opening the real document ----------------------------------------------
+#
+# The inspector shows the text JARVIS extracted. For a PDF invoice that is not
+# the document, and for a scan it is nothing at all — so there has to be a way
+# to see the page itself.
+assert 'id="note-open"' in html
+assert '"/api/file?id="' in app or "/api/file?id=" in app
+assert ".note-open" in css
+# A new tab from our own page, and it must not hand the opener over.
+assert 'target="_blank"' in html and 'rel="noopener noreferrer"' in html, \
+    "the document tab would keep a handle on the app"
+# The link must be hidden for anything the server will not serve, or it is a
+# button that returns 403.
+assert "OPENABLE" in app and "open.hidden = true" in app
+print("the real document can be opened, and only for types the server serves.")
+
 # -- reindex ----------------------------------------------------------------
 assert re.search(r'\$\("btn-reindex"\)\.addEventListener\("click"', app), "btn-reindex"
 assert '"/api/reindex"' in app

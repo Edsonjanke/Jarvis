@@ -31,6 +31,7 @@
     <div class="note-type"><span class="swatch" id="note-swatch"></span><span id="note-kind"></span></div>
     <h1 id="note-title"></h1>
     <p class="note-path" id="note-path"></p>
+    <a id="note-open" class="note-open" target="_blank" rel="noopener noreferrer" hidden></a>
     <ul class="meta-grid" id="note-meta"></ul>
     <div class="note-body" id="note-body"></div>
     <section class="links">
@@ -106,7 +107,12 @@
     <button id="btn-brief"  class="key" type="button" data-stage-min="3">Brief</button>
     <button id="btn-plan"   class="key" type="button" data-stage-min="3">Plan</button>
     <button id="btn-memory" class="key" type="button" data-stage-min="5">Memory</button>
+    <button id="btn-history" class="key" type="button" data-stage-min="5">Histórico</button>
     <button id="btn-reindex" class="key" type="button">Reindexar</button>
+    <span id="thread-bar" class="thread-bar" hidden>
+      <span id="thread-label"></span>
+      <button id="btn-new-thread" class="ghost" type="button">nova conversa</button>
+    </span>
   </div>
   <div id="results" class="results" hidden></div>
 </footer>

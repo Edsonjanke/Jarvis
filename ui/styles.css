@@ -564,6 +564,71 @@ html, body {
 }
 .brain-row[aria-pressed="true"] .name { color: var(--accent); }
 
+/* ── history ─────────────────────────────────────────────────────────────
+   The conversation indicator sits in the button row because "this question
+   will be read alongside the last one" changes what you should type. */
+.thread-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 6px;
+  padding: 4px 8px;
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r);
+}
+
+.history-search {
+  width: 100%;
+  margin: 6px 0 10px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-1);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--r);
+}
+.history-search:focus { outline: none; border-color: var(--accent); }
+
+.turn {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.turn-q {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.turn-q:hover { color: var(--accent); }
+.turn-meta { font-size: 10px; color: var(--ink-3); white-space: nowrap; }
+
+/* Opening the real document. Deliberately not styled as a primary action —
+   the extracted text is still the fast path; this is for when you need to
+   see the page itself. */
+.note-open {
+  display: inline-block;
+  margin: 2px 0 10px;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r);
+  text-decoration: none;
+}
+.note-open:hover { filter: brightness(1.25); }
+.note-open::after { content: " ↗"; opacity: 0.6; }
+
 /* Why a tool is not available is worth reading, so it is not hidden in a
    title attribute where only a mouse would ever find it. */
 .tool-note {

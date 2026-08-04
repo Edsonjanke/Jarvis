@@ -10,6 +10,11 @@ data/demo_vault/
 # Remembered facts are personal. Delete this line if you want them versioned.
 memory/*.md
 
+# History is more personal still: an answer about your accounts payable quotes
+# your accounts payable. Delete this line to version it — which is also how you
+# would sync it to another machine, since it is just files.
+history/*.jsonl
+
 # Python
 __pycache__/
 *.py[cod]
