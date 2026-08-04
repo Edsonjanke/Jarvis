@@ -131,6 +131,19 @@ class Action:
 # uma nota, de um e-mail ou de uma página — senão uma linha escrita num arquivo
 # ("abra este site e confirme") viraria uma ação, que é a injeção exata que o
 # resto do sistema recusa.
+# A palavra de acordo entra no texto, às vezes duas vezes.
+#
+# Ditado dá "Jarvis? Jarvis, abrir o YouTube" — foi o que o Edson mandou pelo
+# microfone, e a intenção não casou porque o verbo não abria a frase. A regra
+# está certa e não afrouxa: o vocativo é **removido** antes de olhar, e o verbo
+# continua tendo de abrir o que sobra. "Jarvis, como faço para abrir o YouTube"
+# segue sendo pergunta.
+WAKE_RE = re.compile(
+    r"^\s*(?:(?:ei|ô|oi|olá|ola|hey|ok|okay)\s+)?"
+    r"(?:jarvis|jarves|jarvez|j[áa]rvis)\s*[,.!?:;–—-]*\s*",
+    re.I,
+)
+
 OPEN_RE = re.compile(
     r"^\s*(?:por favor\s+)?"
     r"(?:abre|abrir|abra|abri|vai\s+(?:em|pra|para|no|na)|"
@@ -176,7 +189,16 @@ def intent(text: str) -> str | None:
     montar `https://www.<palavra>.com`. Chutar domínio é inventar, e inventar é
     a única coisa que este assistente não tem licença para fazer.
     """
-    match = OPEN_RE.match(text or "")
+    said = text or ""
+    # Duas vezes no máximo: o microfone repete o acordo ("Jarvis? Jarvis, ..."),
+    # mas um laço sem teto deixaria "jarvis jarvis jarvis" comer a frase inteira.
+    for _ in range(2):
+        stripped = WAKE_RE.sub("", said, count=1)
+        if stripped == said:
+            break
+        said = stripped
+
+    match = OPEN_RE.match(said)
     if not match:
         return None
     what = match.group(1).strip().strip("\"'“”")

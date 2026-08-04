@@ -203,6 +203,24 @@ def test_intent_only_fires_on_a_command() -> list[bool]:
     ]:
         out.append(_check(f"{said!r}", browse.intent(said), want))
 
+    # Ditado traz a palavra de acordo junto, às vezes duas vezes. Esta é a
+    # transcrição literal do microfone do Edson, e ela não casava.
+    for said, want in [
+        ("Jarvis? Jarvis, abrir o YouTube", "https://www.youtube.com"),
+        ("Jarvis, abre o youtube", "https://www.youtube.com"),
+        ("JARVIS abre o github", "https://github.com"),
+        ("ei Jarvis, vai no mercado livre", "https://www.mercadolivre.com.br"),
+        ("Jarvis. Jarvis. abre o conta azul", "https://app.contaazul.com"),
+    ]:
+        out.append(_check(f"por voz: {said!r}", browse.intent(said), want))
+
+    # Tirar o vocativo não afrouxa a regra: o verbo ainda tem de abrir o que
+    # sobra, então pergunta com "Jarvis" na frente continua sendo pergunta.
+    for said in ("Jarvis, como faço para abrir o youtube",
+                 "Jarvis, qual o preço do aço 1045", "Jarvis"):
+        out.append(_check(f"por voz, {said!r} não é comando",
+                          browse.intent(said), None))
+
     for said in ("como faço para abrir o youtube", "qual o preço do aço 1045",
                  "abre um resumo do mês", "abre minha agenda de ontem",
                  "abrir", "o que abriu ontem"):
