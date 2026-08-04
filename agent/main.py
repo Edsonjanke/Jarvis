@@ -17,6 +17,7 @@ import json
 import mimetypes
 import sys
 import threading
+import time
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,7 +28,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent import (brain, browse, data as data_mod, edit, embed, llm, memory,
-                   notebook, skills, tools, voice)
+                   notebook, skills, tools, voice, web)
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -455,6 +456,25 @@ class Handler(BaseHTTPRequestHandler):
         thread = str(body.get("thread") or "")[:64]
 
         vault = STORE.get()
+
+        # "abre o youtube" é uma ordem, não uma pergunta sobre o Cofre.
+        #
+        # Interceptado aqui, no servidor, e não no JS: assim a voz entra pelo
+        # mesmo caminho. Ditar "abre o Conta Azul" tem de fazer o mesmo que
+        # digitar. Só vale para o texto que o Edson escreveu ou falou — nunca
+        # para conteúdo de nota ou de página.
+        #
+        # Vale em ask **e** em research: no primeiro teste ele digitou "abrir
+        # you tube" com o botão Web apertado, e a pesquisa foi buscar rodapé
+        # institucional do YouTube em vez de abrir o site. Quem manda abrir não
+        # está pedindo pesquisa, qualquer que seja o botão.
+        if route in ("/api/ask", "/api/research"):
+            spoken = str(body.get("q") or "")
+            target = browse.intent(spoken)
+            if target:
+                self._open_site(spoken, target, thread)
+                return
+
         try:
             if route == "/api/ask":
                 answer = brain.ask(vault, str(body.get("q") or ""), thread, images)
@@ -705,6 +725,70 @@ class Handler(BaseHTTPRequestHandler):
             return
         STORE.rebuild()
         self._json({"ok": True, "change": change.to_dict(), **edit.state()})
+
+    def _open_site(self, said: str, target: str, thread: str) -> None:
+        """Abrir um site porque foi mandado, e dizer o que abriu.
+
+        Duas formas de chegar aqui. Com um endereço resolvido, abre. Com um nome
+        que ninguém conhece, **busca** e abre o primeiro resultado — em vez de
+        montar `https://www.<palavra>.com.br`, que acertaria às vezes e
+        inventaria o resto das vezes.
+
+        A resposta diz a URL que de fato abriu, não a que foi pedida. Redirect
+        para muro de captcha é o caso comum, e ele tem de aparecer.
+        """
+        started = time.time()
+        note, url = "", target
+        if not target.lower().startswith("http"):
+            # Nome desconhecido: procurar é honesto, chutar domínio não é.
+            try:
+                found = web.search(target, "search")
+                if not found.results:
+                    self._fail(HTTPStatus.NOT_FOUND,
+                               f"não sei qual site é \"{target}\" e a busca não "
+                               "trouxe nada — me passe o endereço")
+                    return
+                url = found.results[0].url
+                note = (f"Você não deu o endereço, então procurei: abri o "
+                        f"primeiro resultado de \"{target}\".")
+            except web.WebUnavailable as exc:
+                self._fail(HTTPStatus.SERVICE_UNAVAILABLE,
+                           f"não sei qual site é \"{target}\" e a busca falhou "
+                           f"({exc}) — me passe o endereço")
+                return
+
+        try:
+            page = browse.fetch(url, limit=1_200)
+        except browse.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+
+        lines = [f"Abri **{page['title'] or url}**.", f"`{page['url']}`"]
+        if note:
+            lines.insert(0, note)
+        # Barra final não é redirect. Avisar sobre ela treina você a ignorar o
+        # aviso, e o aviso existe para o caso que importa: muro de captcha,
+        # página de login, domínio trocado.
+        if page["url"].rstrip("/") != url.rstrip("/"):
+            lines.append(f"Redirecionou — pedi `{url}`.")
+        if page["empty"]:
+            lines.append(page["empty"] + " A janela está aberta; se precisar de "
+                         "login, faça na hora e me diga para ler de novo.")
+        else:
+            lines.append(f"{page['chars']} chars de texto na página.")
+
+        answer = brain.Answer(
+            kind="browse",
+            question=said,
+            text="\n\n".join(lines),
+            # Nenhuma nota foi consultada, e a página não é citável como nota:
+            # o rodapé do painel vai dizer "unsourced", que é a verdade.
+            citations=[], considered=[], recalled=[],
+            usage={"tool": "browse", "url": page["url"]},
+            seconds=round(time.time() - started, 3),
+        )
+        turn = notebook.record(answer, thread)
+        self._json({**answer.to_dict(), "turn": turn.id, "thread": turn.thread})
 
     def _browse(self) -> None:
         """Drive the real browser, in the profile that holds Edson's logins.

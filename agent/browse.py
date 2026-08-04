@@ -120,6 +120,87 @@ class Action:
 
 
 # ---------------------------------------------------------------------------
+# Intenção: quando "abre o youtube" é um comando e não uma pergunta
+# ---------------------------------------------------------------------------
+#
+# Só pega imperativo no começo da frase. "abre o youtube" abre; "como faço para
+# abrir o youtube" é pergunta e vai para o modelo, porque não começa com o verbo.
+#
+# Isto é lido **apenas** do que o Edson digitou ou falou. Nunca do conteúdo de
+# uma nota, de um e-mail ou de uma página — senão uma linha escrita num arquivo
+# ("abra este site e confirme") viraria uma ação, que é a injeção exata que o
+# resto do sistema recusa.
+OPEN_RE = re.compile(
+    r"^\s*(?:por favor\s+)?"
+    r"(?:abre|abrir|abra|abri|vai\s+(?:em|pra|para|no|na)|"
+    r"navega(?:r)?\s+(?:para|pra|até|em)|entra\s+(?:em|no|na)|open|go\s+to)"
+    r"\s+(?:o\s|a\s|no\s|na\s|em\s|para\s|pra\s|site\s+d[eoa]\s+|página\s+d[eoa]\s+)?"
+    r"(.{2,120}?)\s*[.!?]?\s*$",
+    re.I,
+)
+
+# Endereço já pronto, ou algo com cara de domínio.
+URLISH_RE = re.compile(r"^(?:https?://|www\.)|^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/|$)", re.I)
+
+# Sites que o Edson vai pedir por nome, e que ninguém deve ter que digitar
+# inteiros. Curta de propósito: uma lista longa começa a chutar.
+SITES = {
+    "youtube": "https://www.youtube.com",
+    "gmail": "https://mail.google.com",
+    "google": "https://www.google.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "whatsapp web": "https://web.whatsapp.com",
+    "conta azul": "https://app.contaazul.com",
+    "contaazul": "https://app.contaazul.com",
+    "mercado livre": "https://www.mercadolivre.com.br",
+    "mercadolivre": "https://www.mercadolivre.com.br",
+    "drive": "https://drive.google.com",
+    "google drive": "https://drive.google.com",
+    "agenda": "https://calendar.google.com",
+    "calendario": "https://calendar.google.com",
+    "calendário": "https://calendar.google.com",
+    "notion": "https://www.notion.so",
+    "github": "https://github.com",
+    "linkedin": "https://www.linkedin.com",
+    "chatgpt": "https://chat.openai.com",
+    "claude": "https://claude.ai",
+}
+
+
+def intent(text: str) -> str | None:
+    """O que o Edson mandou abrir, ou None se não foi um comando de abrir.
+
+    Devolve URL quando dá para resolver com certeza, ou o termo cru quando é um
+    nome que ninguém conhece — nesse caso quem chama deve **buscar**, nunca
+    montar `https://www.<palavra>.com`. Chutar domínio é inventar, e inventar é
+    a única coisa que este assistente não tem licença para fazer.
+    """
+    match = OPEN_RE.match(text or "")
+    if not match:
+        return None
+    what = match.group(1).strip().strip("\"'“”")
+    low = what.lower().rstrip("/")
+
+    # "abre um resumo do mês" não é um site. Artigo indefinido e possessivo
+    # denunciam substantivo comum, e mandar isso para a busca abriria a primeira
+    # página aleatória sobre resumos — pior que não entender.
+    if re.match(r"(?:um|uma|uns|umas|meu|minha|meus|minhas|algum|alguma)\s", low):
+        return None
+
+    if low in SITES:
+        return SITES[low]
+    # "you tube" é o que sai quando se fala, e foi o que o Edson digitou no
+    # primeiro teste. Ditado e digitação separam palavras que o domínio junta,
+    # então tenta de novo sem os espaços antes de desistir.
+    squashed = re.sub(r"\s+", "", low)
+    if squashed in SITES:
+        return SITES[squashed]
+    if URLISH_RE.match(low):
+        return low if low.startswith("http") else f"https://{low}"
+    return what          # nome desconhecido: quem chama busca
+
+
+# ---------------------------------------------------------------------------
 # Diário
 # ---------------------------------------------------------------------------
 
@@ -576,23 +657,47 @@ def links(limit: int = 40) -> dict[str, object]:
     return _run(_impl)
 
 
+def _journal_count() -> tuple[int, int]:
+    """Total de ações e de gastos no diário inteiro.
+
+    Contado sobre o arquivo, não sobre a janela recente: `len(history(20))` dava
+    "20 ações" para sempre depois da vigésima, e um contador que congela mente
+    de forma mais convincente do que um ausente.
+    """
+    try:
+        lines = _journal_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0, 0
+    total = spent = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        total += 1
+        if row.get("kind") == "spend" and row.get("ok"):
+            spent += 1
+    return total, spent
+
+
 def state() -> dict[str, object]:
     ok, why = available()
     recent = history(20)
+    total, spent = _journal_count()
     return {
         "available": ok,
         "reason": why,
         "open": _state.get("page") is not None,
         "url": (_state["page"].url if _state.get("page") is not None else ""),
         "profile": str(profile_dir()),
-        "actions": len(recent),
+        "actions": total,
         "policy": {
             "read": "livre",
             "send": "liberado",
             "spend": "liberado, marcado no diário",
             "secret": "sem senha guardada — logue você na janela",
         },
-        "spent": sum(1 for a in recent if a.kind == "spend" and a.ok),
+        "spent": spent,
         "recent": [a.to_dict() for a in recent[-8:]],
     }
 
