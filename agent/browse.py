@@ -54,6 +54,7 @@ Rode direto:  python -m agent.browse ler https://example.com
 
 from __future__ import annotations
 
+import atexit
 import json
 import queue
 import re
@@ -303,8 +304,32 @@ def _pump() -> None:
             box["done"].set()
 
 
-def _run(fn):
-    """Executa `fn` na thread do navegador e devolve o resultado aqui."""
+# O navegador morreu debaixo de nós. Não é a mesma coisa que a página não abrir.
+DEAD_RE = re.compile(
+    r"has been closed|Target closed|browser has disconnected|Connection closed",
+    re.I,
+)
+
+
+def _run(fn, *, heal: bool = True):
+    """Executa `fn` na thread do navegador e devolve o resultado aqui.
+
+    `heal`: quando o erro é "o navegador morreu", descarta os destroços e tenta
+    **uma** vez com um navegador novo. Uma tentativa, não um laço: se o segundo
+    também morre, o problema não é corrida e insistir só esconde a causa.
+    """
+    try:
+        return _submit(fn)
+    except Refused:
+        raise                            # recusa é decisão, não falha
+    except Exception as exc:
+        if not heal or not DEAD_RE.search(str(exc)):
+            raise
+        _submit(_forget)
+        return _submit(fn)
+
+
+def _submit(fn):
     global _worker
     with _lock:
         if _worker is None or not _worker.is_alive():
@@ -329,6 +354,22 @@ def profile_dir() -> Path:
     return path
 
 
+def _forget() -> None:
+    """Solta as referências de um navegador morto, sem tentar fechá-lo bonito.
+
+    Separado de `close()` de propósito: `close()` fecha um navegador vivo, isto
+    aqui limpa os destroços de um que já morreu. Chamar `context.close()` num
+    contexto morto só levanta outra exceção em cima da primeira.
+    """
+    for key in ("page", "context", "driver"):
+        thing = _state.pop(key, None)
+        if key == "driver" and thing is not None:
+            try:
+                thing.stop()      # o processo do Node fica de pé se ninguém pedir
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def available() -> tuple[bool, str]:
     """Playwright está pronto? Devolve (pode, motivo quando não)."""
     try:
@@ -349,8 +390,23 @@ def _page(headless: bool = False):
     if not ok:
         raise Refused(why)
 
-    if _state.get("page") is not None:
-        return _state["page"]
+    # Aba viva é reaproveitada; aba morta é descartada e nasce outra.
+    #
+    # Sem esta checagem, um lançamento que morreu envenena o cache para sempre:
+    # `_state["page"]` aponta para uma página fechada, `_page()` a devolve
+    # contente, e toda chamada seguinte falha com "Target page, context or
+    # browser has been closed" até alguém reiniciar o servidor. Foi exatamente
+    # o que o Edson viu ao pedir "Abre o YouTube" — o Chrome do servidor
+    # anterior ainda estava saindo e segurando o perfil, o novo nasceu morto, e
+    # o erro passou a ser permanente em vez de passageiro.
+    cached = _state.get("page")
+    if cached is not None:
+        try:
+            if not cached.is_closed():
+                return cached
+        except Exception:  # noqa: BLE001 — objeto órfão do Playwright
+            pass
+        _forget()
 
     from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
@@ -409,8 +465,13 @@ def close() -> None:
                 pass
         _state.pop("page", None)
 
+    if not _state.get("context") and not _state.get("driver"):
+        return                     # nada aberto: fechar é operação vazia
+
     if _worker is not None and _worker.is_alive():
-        _run(_shut)          # fechar também é do dono da thread
+        # heal=False: um navegador que já morreu não precisa nascer de novo só
+        # para ser fechado.
+        _run(_shut, heal=False)
     else:
         _shut()
 
@@ -473,6 +534,11 @@ def goto(url: str, *, headless: bool = False) -> dict[str, object]:
             size = _settle(page)
         except Exception as exc:  # noqa: BLE001
             _record(kind, "goto", url, page.url, False, str(exc)[:200])
+            # Navegador morto sobe cru, para `_run` poder curar e tentar de novo.
+            # Embrulhado em Refused, viraria uma recusa definitiva — e foi assim
+            # que "Abre o YouTube" virou erro permanente em vez de um tropeço.
+            if DEAD_RE.search(str(exc)):
+                raise
             raise Refused(f"não abriu {url}: {str(exc).splitlines()[0][:140]}") from exc
         _record(kind, "goto", url, page.url, True, f"{size} chars")
         return {"url": page.url, "title": page.title(), "chars": size}
@@ -523,6 +589,11 @@ def fetch(url: str, *, limit: int = PAGE_CHARS) -> dict[str, object]:
             _settle(page)
         except Exception as exc:  # noqa: BLE001
             _record(kind, "goto", url, page.url, False, str(exc)[:200])
+            # Navegador morto sobe cru, para `_run` poder curar e tentar de novo.
+            # Embrulhado em Refused, viraria uma recusa definitiva — e foi assim
+            # que "Abre o YouTube" virou erro permanente em vez de um tropeço.
+            if DEAD_RE.search(str(exc)):
+                raise
             raise Refused(f"não abriu {url}: {str(exc).splitlines()[0][:140]}") from exc
         body = _clean(page.inner_text("body"))
         truncated = len(body) > limit
@@ -700,6 +771,15 @@ def state() -> dict[str, object]:
         "spent": spent,
         "recent": [a.to_dict() for a in recent[-8:]],
     }
+
+
+# Fechar o Chrome quando o processo termina normalmente.
+#
+# É a causa raiz do erro que o Edson viu: o servidor foi derrubado, o Chrome dele
+# ficou saindo devagar segurando o perfil, e o servidor seguinte lançou um
+# navegador que nasceu morto. Não cobre `Stop-Process -Force` — nada cobre — mas
+# cobre Ctrl-C e saída limpa, que é a maioria das reinicializações.
+atexit.register(close)
 
 
 # ---------------------------------------------------------------------------
