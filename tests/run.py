@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 FAST = ["check_ui.py", "test_tools.py", "test_fold.py", "test_memory.py",
         "test_keepalive.py", "test_file.py", "test_notebook.py",
         "test_skills.py", "test_edit.py", "test_share.py"]
-SLOW = ["test_llm.py", "test_brain.py", "test_semantic.py"]
+SLOW = ["test_llm.py", "test_brain.py", "test_semantic.py", "test_vision.py"]
 NODE = ["test_mic.mjs"]
 
 

@@ -122,6 +122,26 @@ assert "speechSynthesis?.speaking" in app, "nothing stops it hearing its own ans
 assert "detectSpeech(rec.vad" in app, "audio would be uploaded without a speech check"
 print("always-on listening: local detection, wake word, and no self-triggering.")
 
+# -- eyes --------------------------------------------------------------------
+#
+# A supplier's quote that arrived as a WhatsApp photograph was invisible to
+# JARVIS until now. Three ways in, because the picture arrives three ways.
+for fn in ("prepareImage", "attachImages", "renderAttachments"):
+    assert f"function {fn}" in app or f"async function {fn}" in app, fn
+assert 'id="attachments"' in html and 'id="btn-image"' in html
+assert 'id="image-input"' in html
+for cls in ("attachments", "attachment", "attachment-drop"):
+    assert f".{cls}" in css, cls
+assert 'addEventListener("paste"' in app, "cannot paste a screenshot"
+assert 'addEventListener("drop"' in app, "cannot drag a file in"
+# Scaled before sending: a 4000px photo costs many times the tokens and reads
+# no better.
+assert "IMAGE_MAX_EDGE" in app and "canvas" in app,     "the picture would go up at full size"
+# It must go WITH the question, and must not linger for the next one.
+assert "images: kind === \"ask\"" in app, "the picture never reaches the server"
+assert "state.images = []" in app, "the picture would be sent again next time"
+print("images can be pasted, dropped or picked, scaled, and sent once.")
+
 # -- writing to the vault ----------------------------------------------------
 #
 # JARVIS can change files it did not create, in a vault with no backup. The

@@ -113,6 +113,7 @@
 
 <!-- ── bottom: ask bar ─────────────────────────────────────────────── -->
 <footer id="askbar" class="askbar" aria-label="Ask JARVIS">
+  <div id="attachments" class="attachments" hidden></div>
   <div class="ask-field">
     <span id="ask-mode" class="ask-mode">find</span>
     <input id="ask-input" type="text" autocomplete="off" spellcheck="false"
@@ -127,6 +128,8 @@
     <button id="btn-plan"   class="key" type="button" data-stage-min="3">Plan</button>
     <button id="btn-memory" class="key" type="button" data-stage-min="5">Memory</button>
     <button id="btn-history" class="key" type="button" data-stage-min="5">Histórico</button>
+    <button id="btn-image"  class="key" type="button" data-stage-min="5">Imagem</button>
+    <input id="image-input" type="file" accept="image/*" multiple hidden>
     <button id="btn-reindex" class="key" type="button">Reindexar</button>
     <span id="thread-bar" class="thread-bar" hidden>
       <span id="thread-label"></span>

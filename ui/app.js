@@ -32,6 +32,8 @@ const state = {
   tools: null,
   skills: null,
   edit: null,
+  // Pictures attached to the question being typed. Cleared once sent.
+  images: [],
 };
 
 // ── alerts ────────────────────────────────────────────────────────────────
@@ -611,7 +613,13 @@ async function think(kind, payload, label) {
       // The conversation so far. Sending it is what makes "and of those,
       // which are PARINOX?" answerable — without it every question is asked
       // of a JARVIS that has never spoken to you before.
-      body: JSON.stringify({ ...payload, thread: state.thread || "" }),
+      body: JSON.stringify({
+        ...payload,
+        thread: state.thread || "",
+        images: kind === "ask"
+          ? state.images.map(({ media_type, data }) => ({ media_type, data }))
+          : [],
+      }),
     }).then((r) => r.json());
   } catch (err) {
     $("results").hidden = true;
@@ -628,6 +636,10 @@ async function think(kind, payload, label) {
   // Carry the thread on. The server starts a new one when we send none, so
   // this is also how the very first question gets an id at all.
   if (res.thread) { state.thread = res.thread; showThread(); }
+
+  // The pictures went with the question and belong to it. Leaving them
+  // attached would silently send them again with the next one.
+  if (state.images.length) { state.images = []; renderAttachments(); }
 
   renderAnswer(res);
   stopThinking();
@@ -1253,6 +1265,98 @@ $("btn-wake").addEventListener("click", () => {
 // throw any of it away — so this panel is not a nicety, it is the other half
 // of letting it write at all.
 
+// ── olhos ─────────────────────────────────────────────────────────────────
+//
+// Paste a screenshot, or drag a photo onto the page, and it goes with your
+// question. A supplier's quote that arrived as a WhatsApp photograph, a bank
+// statement someone screenshotted, a scanned invoice the text extractor could
+// make nothing of — all of it was invisible until now.
+//
+// Scaled down here, before it is sent, and that is not only about bandwidth: a
+// 4000-pixel phone photo costs many times the tokens of a 1568-pixel one and
+// reads no better. The long edge is capped at what the model actually uses.
+
+const IMAGE_MAX_EDGE = 1568;      // beyond this the model gains nothing
+const IMAGE_MAX_COUNT = 4;
+const IMAGE_QUALITY = 0.85;
+
+/** A File or Blob, scaled and re-encoded. Returns {media_type, data, url}. */
+async function prepareImage(file) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  bitmap.close?.();
+
+  // JPEG for photographs and screenshots alike. PNG of a screenshot is often
+  // smaller, but re-encoding to one type keeps the server's allowlist short
+  // and the size predictable.
+  const url = canvas.toDataURL("image/jpeg", IMAGE_QUALITY);
+  return {
+    media_type: "image/jpeg",
+    data: url.slice(url.indexOf(",") + 1),
+    url,
+    label: file.name || `imagem ${w}×${h}`,
+  };
+}
+
+async function attachImages(files) {
+  const pictures = [...files].filter((f) => f && f.type.startsWith("image/"));
+  if (!pictures.length) return;
+
+  const room = IMAGE_MAX_COUNT - state.images.length;
+  if (room <= 0) {
+    hint(`No máximo ${IMAGE_MAX_COUNT} imagens por pergunta.`);
+    return;
+  }
+  for (const file of pictures.slice(0, room)) {
+    try {
+      state.images.push(await prepareImage(file));
+    } catch (err) {
+      alert("warn", "Imagem", `Não consegui ler ${file.name || "a imagem"}. ${err}`);
+    }
+  }
+  if (pictures.length > room) {
+    hint(`Anexei ${room}; o limite é ${IMAGE_MAX_COUNT} por pergunta.`);
+  }
+  renderAttachments();
+}
+
+function renderAttachments() {
+  const strip = $("attachments");
+  if (!strip) return;
+  strip.replaceChildren();
+  strip.hidden = !state.images.length;
+
+  state.images.forEach((image, index) => {
+    const wrap = document.createElement("span");
+    wrap.className = "attachment";
+
+    const thumb = document.createElement("img");
+    thumb.src = image.url;
+    thumb.alt = image.label;
+    thumb.title = `${image.label} · ${(image.data.length * 3 / 4 / 1024).toFixed(0)} kB`;
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "attachment-drop";
+    drop.textContent = "×";
+    drop.title = "tirar esta imagem";
+    drop.addEventListener("click", () => {
+      state.images.splice(index, 1);
+      renderAttachments();
+    });
+
+    wrap.append(thumb, drop);
+    strip.appendChild(wrap);
+  });
+}
+
 // ── alterações no vault ───────────────────────────────────────────────────
 //
 // JARVIS can now change files you made — files it did not create and cannot
@@ -1644,6 +1748,40 @@ async function showMemory() {
 
 $("btn-memory").addEventListener("click", showMemory);
 $("btn-history").addEventListener("click", () => showHistory());
+
+// Three ways in, because the picture arrives three ways: pasted from a
+// screenshot tool, dragged from a folder, or picked from a phone's downloads.
+$("btn-image").addEventListener("click", () => $("image-input").click());
+$("image-input").addEventListener("change", (e) => {
+  attachImages(e.target.files);
+  e.target.value = "";            // so the same file can be picked twice
+});
+
+window.addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.some((f) => f.type.startsWith("image/"))) {
+    e.preventDefault();
+    attachImages(files);
+  }
+});
+
+// Dropping anywhere on the page, not only on the bar — a target you have to
+// aim at is a target you miss.
+window.addEventListener("dragover", (e) => {
+  if ([...(e.dataTransfer?.types || [])].includes("Files")) {
+    e.preventDefault();
+    document.body.classList.add("dropping");
+  }
+});
+window.addEventListener("dragleave", (e) => {
+  if (!e.relatedTarget) document.body.classList.remove("dropping");
+});
+window.addEventListener("drop", (e) => {
+  if (!e.dataTransfer?.files?.length) return;
+  e.preventDefault();
+  document.body.classList.remove("dropping");
+  attachImages(e.dataTransfer.files);
+});
 $("btn-new-thread").addEventListener("click", newThread);
 
 $("btn-mute").addEventListener("click", () => {

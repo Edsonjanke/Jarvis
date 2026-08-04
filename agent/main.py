@@ -39,6 +39,11 @@ MAX_BODY_BYTES = 64 * 1024
 # ~1 MB, and base64 adds a third.
 MAX_AUDIO_BODY_BYTES = 6 * 1024 * 1024
 
+# And a question can carry pictures — a photograph of a supplier's quote, a
+# screenshot of a statement. The browser scales them down before sending, so
+# this is a ceiling on a mistake rather than a working size.
+MAX_IMAGE_BODY_BYTES = 24 * 1024 * 1024
+
 UI_DIR = data_mod.ROOT / "ui"
 
 mimetypes.add_type("text/javascript", ".js")
@@ -84,6 +89,44 @@ def catch_up(vault: Vault) -> None:
 
 
 STORE = VaultStore()
+
+
+def _images(body: dict[str, object]) -> list[tuple[str, str]]:
+    """Pictures attached to a question, validated before they go anywhere.
+
+    Everything about the shape is checked here rather than trusted: the type
+    against a fixed list, the count, and that the payload is really base64.
+    The last one matters most — the string is handed to a subprocess inside
+    JSON, and decoding it here is what proves it is a picture and not a
+    sentence someone hopes will be read as one.
+    """
+    raw = body.get("images")
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("images must be a list")
+    if len(raw) > llm.MAX_IMAGES:
+        raise ValueError(f"at most {llm.MAX_IMAGES} images per question")
+
+    out: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each image must be an object")
+        media_type = str(item.get("media_type") or "").strip().lower()
+        data = str(item.get("data") or "")
+        if media_type not in llm.ALLOWED_IMAGE_TYPES:
+            raise ValueError(f"{media_type or '(none)'} is not an image type Claude reads")
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("image data is not valid base64") from None
+        if not decoded:
+            raise ValueError("empty image")
+        if len(decoded) > llm.MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"image over the {llm.MAX_IMAGE_BYTES // 1024 // 1024} MB cap")
+        out.append((media_type, data))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +385,7 @@ class Handler(BaseHTTPRequestHandler):
             # measured.
             try:
                 self._drain(MAX_AUDIO_BODY_BYTES if route == "/api/listen"
+                            else MAX_IMAGE_BODY_BYTES if route == "/api/ask"
                             else MAX_BODY_BYTES)
             except ValueError as exc:
                 self._fail(HTTPStatus.BAD_REQUEST, str(exc))
@@ -394,6 +438,10 @@ class Handler(BaseHTTPRequestHandler):
         """ask / brief / plan. The key stays here; only the answer goes out."""
         try:
             body = self._body()
+            # Validated out here, with the body, because a malformed picture is
+            # the caller's mistake — a 400 with the reason. Left inside the
+            # block below it would surface as a 500 and read like a crash.
+            images = _images(body)
         except ValueError as exc:
             self._fail(HTTPStatus.BAD_REQUEST, str(exc))
             return
@@ -406,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
         vault = STORE.get()
         try:
             if route == "/api/ask":
-                answer = brain.ask(vault, str(body.get("q") or ""), thread)
+                answer = brain.ask(vault, str(body.get("q") or ""), thread, images)
             elif route == "/api/plan":
                 answer = brain.plan(vault, str(body.get("goal") or ""))
             else:

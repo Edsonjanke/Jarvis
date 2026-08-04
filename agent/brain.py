@@ -302,7 +302,8 @@ the single biggest unknown."""
 # ---------------------------------------------------------------------------
 
 def _run(vault: Vault, kind: str, question: str, system: str,
-         notes: list[Note], user: str, thread: str = "") -> Answer:
+         notes: list[Note], user: str, thread: str = "",
+         images: list[tuple[str, str]] | None = None) -> Answer:
     started = time.time()
     block, considered = context(notes)
     if not considered:
@@ -353,6 +354,21 @@ def _run(vault: Vault, kind: str, question: str, system: str,
     # more immediate than something learned weeks ago, and when the two
     # disagree the model should see the recent one in the context of the old,
     # not the reverse.
+    # An image is evidence, but it is not a note and has no id, so it cannot be
+    # cited — same standing as REMEMBERED. Saying so matters: without it the
+    # model reads a system prompt that insists every claim carry a note id,
+    # sees a picture that has none, and hedges about something it can see
+    # perfectly well.
+    if images:
+        count = len(images)
+        prompt = (
+            f"IMAGE — {count} picture{'s' if count > 1 else ''} sent with this "
+            "question: a photograph, a screenshot, a scan. Read "
+            f"{'them' if count > 1 else 'it'} as evidence and use what you see. "
+            "It has no note id and is not citable, so state what it shows "
+            "plainly rather than hedging for want of a citation.\n\n" + prompt
+        )
+
     earlier = notebook.conversation_block(thread)
     if earlier:
         prompt = (
@@ -363,7 +379,7 @@ def _run(vault: Vault, kind: str, question: str, system: str,
             + f"\n\n{prompt}"
         )
 
-    text, usage = llm.complete(system, prompt)
+    text, usage = llm.complete(system, prompt, images=images)
     return Answer(
         kind=kind,
         question=question,
@@ -378,7 +394,8 @@ def _run(vault: Vault, kind: str, question: str, system: str,
     )
 
 
-def ask(vault: Vault, question: str, thread: str = "") -> Answer:
+def ask(vault: Vault, question: str, thread: str = "",
+        images: list[tuple[str, str]] | None = None) -> Answer:
     question = question.strip()
     if not question:
         raise llm.LLMFailed("no question given")
@@ -386,7 +403,7 @@ def ask(vault: Vault, question: str, thread: str = "") -> Answer:
     notes = retrieve(vault, question)
     if notes:
         return _run(vault, "ask", question, _ASK_SYSTEM, notes,
-                    f"QUESTION\n\n{question}", thread)
+                    f"QUESTION\n\n{question}", thread, images)
 
     # Search is lexical, so a question can miss everything — a word the notes
     # never use, or a question in one language about notes in another. Raising
@@ -399,7 +416,7 @@ def ask(vault: Vault, question: str, thread: str = "") -> Answer:
         "Searching the vault for this matched no note at all. The notes below are not "
         "results — they are simply its most connected ones. Say plainly, in one line, that "
         "nothing here answers the question, then say briefly what the vault does cover.",
-        thread,
+        thread, images,
     )
 
 

@@ -355,7 +355,42 @@ def choose(model: str) -> dict[str, object]:
 # The call
 # ---------------------------------------------------------------------------
 
-def _argv(launcher: Path, system_flag: list[str], model: str, effort: str) -> list[str]:
+ALLOWED_IMAGE_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
+
+# Per image, after the browser has already scaled it down. Well under what the
+# model accepts; the ceiling that matters in practice is the whole prompt.
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_IMAGES = 4
+
+
+def _stdin_for(prompt: str, images: list[tuple[str, str]] | None) -> bytes:
+    """What goes down the pipe.
+
+    Plain text when there is no picture — the shape every other call has used,
+    unchanged. With pictures it becomes one stream-json message carrying text
+    and image blocks together, which is the only input format the CLI accepts
+    an image through. Verified against the real binary before this was built:
+    a WhatsApp photograph of a receivables table came back transcribed.
+    """
+    if not images:
+        return prompt.encode("utf-8") + b"\n"
+
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+    for media_type, data in images[:MAX_IMAGES]:
+        if media_type not in ALLOWED_IMAGE_TYPES:
+            raise LLMFailed(f"{media_type} is not an image type Claude reads")
+        # base64 is 4 chars per 3 bytes; check the decoded size, not the string.
+        if len(data) * 3 // 4 > MAX_IMAGE_BYTES:
+            raise LLMFailed(f"image over the {MAX_IMAGE_BYTES // 1024 // 1024} MB cap")
+        content.append({"type": "image", "source": {
+            "type": "base64", "media_type": media_type, "data": data}})
+
+    message = {"type": "user", "message": {"role": "user", "content": content}}
+    return json.dumps(message).encode("utf-8") + b"\n"
+
+
+def _argv(launcher: Path, system_flag: list[str], model: str, effort: str,
+          *, images: bool = False) -> list[str]:
     """The whole command line, built here and nowhere else.
 
     A silently dropped flag would be invisible at runtime and expensive — one
@@ -369,10 +404,16 @@ def _argv(launcher: Path, system_flag: list[str], model: str, effort: str) -> li
     name. `--strict-mcp-config` is inside it and is never dropped.
     """
     permitted = tools.flags()
+    # An image can only reach the model through stream-json input, and the CLI
+    # refuses that unless the output is stream-json too ("--input-format=
+    # stream-json requires output-format=stream-json"). So the pair moves
+    # together, and _parse_output below reads either shape.
+    shape = (["--output-format", "stream-json", "--input-format", "stream-json",
+              "--verbose"] if images else ["--output-format", "json"])
     return [
         str(launcher),
         "--print",
-        "--output-format", "json",
+        *shape,
         "--model", model,
         "--fallback-model", FALLBACK_MODEL,
         "--effort", effort,
@@ -388,18 +429,60 @@ def _argv(launcher: Path, system_flag: list[str], model: str, effort: str) -> li
     ]
 
 
+def _parse_output(stdout: str) -> dict[str, object]:
+    """The result object, from either output shape.
+
+    `--output-format json` gives one object. `--output-format stream-json`,
+    which an image forces, gives newline-delimited objects of which the last
+    `result` is the answer. Both are read here so the caller does not have to
+    know which one it asked for.
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        payload = None
+
+    if payload is None:                       # newline-delimited
+        for line in reversed(stdout.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict) and item.get("type") == "result":
+                return item
+        raise LLMFailed(
+            f"Claude Code returned something that is not JSON: {stdout[:120]}")
+
+    if isinstance(payload, list):             # --verbose array shape
+        payload = next((p for p in reversed(payload)
+                        if isinstance(p, dict) and p.get("type") == "result"), {})
+    if not isinstance(payload, dict):
+        raise LLMFailed("Claude Code returned an unexpected payload shape")
+    return payload
+
+
 def complete(
     system: str,
     user: str,
     *,
     max_tokens: int | None = None,   # accepted, ignored — see below
     effort: str = "medium",
+    images: list[tuple[str, str]] | None = None,
 ) -> tuple[str, dict[str, object]]:
     """One turn. Returns the answer text and a small usage report.
 
     `max_tokens` has no equivalent: Claude Code owns the output budget. It is
     accepted so callers written against the API-backed version keep working,
     and it does nothing — it is not quietly approximated.
+
+    `images` is a list of (media_type, base64) — a photograph of a supplier's
+    quote, a screenshot of a bank statement, a scanned invoice. They travel the
+    same way the notes do: inside the prompt, on stdin, with `--tools ""` still
+    in place. Nothing on disk is opened to make this work, which is why giving
+    JARVIS eyes cost none of the isolation the rest of this file defends.
 
     Raises LLMUnavailable when there is nothing to call, LLMFailed with a
     sentence fit for the alert strip when the call itself goes wrong.
@@ -435,9 +518,10 @@ def complete(
             else:
                 system_flag = ["--system-prompt", system]
 
-            argv = _argv(launcher, system_flag, model, effort)
+            argv = _argv(launcher, system_flag, model, effort, images=bool(images))
+            stdin = _stdin_for(prompt, images)
             try:
-                proc = _run(argv, stdin=prompt.encode("utf-8") + b"\n",
+                proc = _run(argv, stdin=stdin,
                             timeout=TIMEOUT_SECONDS, cwd=_workdir())
             except subprocess.TimeoutExpired:
                 raise LLMFailed(
@@ -455,16 +539,7 @@ def complete(
         # treated as failure — only stderr with nothing on stdout.
         raise LLMFailed(_last_line(stderr) or f"Claude Code exited {proc.returncode} with no output")
 
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        raise LLMFailed(f"Claude Code returned something that is not JSON: {stdout[:120]}") from None
-
-    if isinstance(payload, list):  # --verbose shape; should not happen here
-        payload = next((p for p in reversed(payload)
-                        if isinstance(p, dict) and p.get("type") == "result"), {})
-    if not isinstance(payload, dict):
-        raise LLMFailed("Claude Code returned an unexpected payload shape")
+    payload = _parse_output(stdout)
 
     # A failure inside the run comes back looking successful: exit may be 1 but
     # the JSON parses, and `subtype` can still say "success" while is_error is

@@ -564,6 +564,58 @@ html, body {
 }
 .brain-row[aria-pressed="true"] .name { color: var(--accent); }
 
+/* ── attached images ─────────────────────────────────────────────────────
+   Thumbnails above the ask bar. Small, but they must be unmistakable: a
+   picture you forgot was attached is one you send by accident. */
+.attachments {
+  display: flex;
+  gap: 8px;
+  padding: 8px 4px 0;
+  flex-wrap: wrap;
+}
+.attachment { position: relative; display: inline-block; }
+.attachment img {
+  height: 52px;
+  width: auto;
+  max-width: 120px;
+  object-fit: cover;
+  border-radius: var(--r);
+  border: 1px solid var(--accent-soft);
+  display: block;
+}
+.attachment-drop {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #000;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Dropping a file anywhere on the page should look like it will land. */
+body.dropping::after {
+  content: "solte a imagem";
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.55);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+}
+
 /* ── history ─────────────────────────────────────────────────────────────
    The conversation indicator sits in the button row because "this question
    will be read alongside the last one" changes what you should type. */
