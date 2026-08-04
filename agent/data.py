@@ -20,7 +20,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-DEMO_VAULT = ROOT / "data" / "demo_vault"
 MEMORY_DIR = ROOT / "memory"
 ENV_FILE = ROOT / ".env"
 
@@ -126,6 +125,21 @@ def _label_for(path: Path, taken: set[str]) -> str:
     return label
 
 
+def demo_vault() -> Path:
+    """Where the invented vault lives, when there is one.
+
+    It used to be a constant at data/demo_vault, and a copy of 142 invented
+    notes sat in the working tree forever. It does not any more: it is a test
+    fixture and a screen-recording mode, not something the repository should
+    carry around. JARVIS_DEMO_VAULT moves it, which is how the suite builds
+    its own throwaway copy somewhere temporary and leaves this tree clean.
+    """
+    override = setting("JARVIS_DEMO_VAULT", "").strip().strip('"')
+    if override:
+        return Path(os.path.expandvars(os.path.expanduser(override)))
+    return ROOT / "data" / "demo_vault"
+
+
 def vault_sources() -> SourceReport:
     """The folders to index, plus anything that went wrong resolving them.
 
@@ -135,12 +149,13 @@ def vault_sources() -> SourceReport:
     problems: list[str] = []
 
     if is_demo():
-        if not DEMO_VAULT.is_dir():
+        demo = demo_vault()
+        if not demo.is_dir():
             problems.append(
-                f"demo vault missing at {DEMO_VAULT} — run: python data/generate.py"
+                f"demo vault missing at {demo} — run: python data/generate.py"
             )
             return SourceReport((), tuple(problems))
-        return SourceReport((VaultRoot(DEMO_VAULT, "demo"),), ())
+        return SourceReport((VaultRoot(demo, "demo"),), ())
 
     raw = setting("JARVIS_VAULTS", "").strip()
     if not raw:

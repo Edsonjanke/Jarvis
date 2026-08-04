@@ -11,11 +11,15 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# The demo vault, always — these assertions are about ITS content.
-# Without this the suite passes or fails depending on whatever
-# JARVIS_VAULTS happens to point at today, which is not a test.
-os.environ["JARVIS_DEMO"] = "1"
+# The demo vault, always, and built somewhere temporary — these
+# assertions are about ITS content. Without this the suite passes or
+# fails depending on wherever JARVIS_VAULTS points today, which is
+# not a test. ensure() must run before anything from agent/ is
+# imported, because data.py reads the setting at call time.
+import demo  # noqa: E402
+demo.ensure()
 
 
 
@@ -51,6 +55,12 @@ def restore():
             path.unlink(missing_ok=True)
         else:
             path.write_text(text, encoding="utf-8")
+    # config_path() derives mcp-config.json from the servers file as a side
+    # effect of building the argv, so putting the inputs back is not enough:
+    # without this the run leaves a fake Notion server and a "Bearer prova"
+    # sitting on disk. Found it there after a run, which is how this line
+    # came to exist.
+    (STATE / "mcp-config.json").unlink(missing_ok=True)
     tools.allow(tools.allowed())      # no cache to invalidate, but be explicit
 
 

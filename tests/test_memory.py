@@ -12,11 +12,15 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# The demo vault, always — these assertions are about ITS content.
-# Without this the suite passes or fails depending on whatever
-# JARVIS_VAULTS happens to point at today, which is not a test.
-os.environ["JARVIS_DEMO"] = "1"
+# The demo vault, always, and built somewhere temporary — these
+# assertions are about ITS content. Without this the suite passes or
+# fails depending on wherever JARVIS_VAULTS points today, which is
+# not a test. ensure() must run before anything from agent/ is
+# imported, because data.py reads the setting at call time.
+import demo  # noqa: E402
+demo.ensure()
 
 
 

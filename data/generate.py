@@ -15,6 +15,7 @@ nothing here writes outside data/demo_vault.
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import shutil
@@ -25,7 +26,20 @@ from pathlib import Path
 SEED = 1729
 BASE_DATE = date(2026, 8, 2)          # fixed, so dates are reproducible too
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "data" / "demo_vault"
+
+
+def _out() -> Path:
+    """Where to write. Defaults to data/demo_vault; argv or the environment
+    can point it somewhere else, which is how the test suite builds a
+    throwaway copy instead of leaving 142 invented notes in the repository."""
+    if len(sys.argv) > 1:
+        return Path(sys.argv[1]).expanduser()
+    override = os.environ.get("JARVIS_DEMO_VAULT", "").strip().strip('"')
+    return Path(os.path.expandvars(override)).expanduser() if override \
+        else ROOT / "data" / "demo_vault"
+
+
+OUT = _out()
 
 
 # ---------------------------------------------------------------------------
@@ -602,11 +616,15 @@ def main() -> int:
     except (AttributeError, OSError):
         pass
 
-    # Only ever touch data/demo_vault, and only inside this repo.
+    # This function calls rmtree, and the destination is now settable from the
+    # command line and the environment. So the name is the trip-wire: it has to
+    # be exactly "demo_vault", wherever it sits. JARVIS_DEMO_VAULT pointing at
+    # someone's notes folder gets a refusal, not a deletion.
+    if OUT.name != "demo_vault":
+        print(f"refusing to write to {OUT}: the folder must be named demo_vault",
+              file=sys.stderr)
+        return 1
     if OUT.exists():
-        if OUT.name != "demo_vault" or ROOT not in OUT.parents:
-            print(f"refusing to clear {OUT}", file=sys.stderr)
-            return 1
         shutil.rmtree(OUT)
 
     counts = build()
