@@ -150,6 +150,12 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.1"
 
+    # This request's parsed body, or None before it is read. A class attribute
+    # so it is defined even on a path that never reaches do_POST; do_POST
+    # resets it per request, because one instance serves a whole connection.
+    _body_cache: dict[str, object] | None = None
+    _raw: bytes = b""
+
     # -- plumbing -----------------------------------------------------------
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -225,13 +231,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _body(self, cap: int = MAX_BODY_BYTES) -> dict[str, object]:
-        """The JSON body of a POST. Missing or empty is an empty dict.
+    def _drain(self, cap: int = MAX_BODY_BYTES) -> None:
+        """Take the body off the socket. Nothing else.
 
-        The body is read before anything is validated. On a keep-alive
-        connection an unread body is not discarded — it stays in the socket and
-        the next request starts parsing halfway through it, so rejecting early
-        would turn one bad request into a broken connection.
+        Split from parsing on purpose, and it is the split that makes the
+        ordering in do_POST possible: the bytes have to leave the socket before
+        any check runs, but a check must not be skipped because the bytes were
+        wrong. So this reads and judges nothing, and _body() judges without
+        reading.
         """
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -244,7 +251,16 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise ValueError(f"body over the {cap // 1024} kB cap")
 
-        raw = self.rfile.read(length) if length > 0 else b""
+        self._raw = self.rfile.read(length) if length > 0 else b""
+
+    def _body(self) -> dict[str, object]:
+        """The JSON body of a POST. Missing or empty is an empty dict.
+
+        Parses what _drain already took off the socket, so calling it twice is
+        free and calling it late is safe.
+        """
+        if self._body_cache is not None:
+            return self._body_cache
 
         # Requiring JSON is the other half of the cross-site guard: a form or a
         # text/plain fetch is a "simple" request that needs no permission from
@@ -254,14 +270,16 @@ class Handler(BaseHTTPRequestHandler):
         if ctype and ctype != "application/json":
             raise ValueError(f"expected application/json, got {ctype}")
 
-        if not raw:
-            return {}
+        if not self._raw:
+            self._body_cache = {}
+            return self._body_cache
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            payload = json.loads(self._raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"body is not valid JSON: {exc}") from None
         if not isinstance(payload, dict):
             raise ValueError("body must be a JSON object")
+        self._body_cache = payload
         return payload
 
     # -- routing ------------------------------------------------------------
@@ -290,8 +308,43 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             route = urlparse(self.path).path
+            # One instance serves every request on a keep-alive connection, so
+            # last request's body must not be mistaken for this one's.
+            self._body_cache = None
+            self._raw = b""
+
+            # Take the body off the socket HERE — every route, before any
+            # check, and before the guard.
+            #
+            # On a keep-alive connection an unread body is not discarded. It
+            # stays in the socket and the next request starts parsing halfway
+            # through it. /api/reindex ignored its body, and the two bytes of
+            # "{}" the page sends turned the following request into
+            # "{}GET /api/health" — 501, and the page fell over.
+            #
+            # Before the guard, because that is the version with teeth. A
+            # refused request has a body too, and leaving it unread lets a
+            # cross-site page hide a whole HTTP request inside it: the 403
+            # goes back, the bytes stay, and the parser reads them as a new
+            # request — with the Host and Origin the attacker wrote. The guard
+            # then approves, because it is reading the attacker's own headers.
+            # Measured, not theorised: it switched an MCP tool on from
+            # evil.example through a 403. tests/test_keepalive.py keeps it
+            # measured.
+            try:
+                self._drain(MAX_AUDIO_BODY_BYTES if route == "/api/listen"
+                            else MAX_BODY_BYTES)
+            except ValueError as exc:
+                self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+
+            # After draining, so a cross-site request still gets told what it
+            # is — 403 and "cross-site requests are refused", not a 400 about
+            # its Content-Type. Draining is about the socket; this is about
+            # who is asking. They are different questions.
             if not self._guard():
                 return
+
             if route == "/api/reindex":
                 vault = STORE.rebuild()
                 self._json({"ok": True, "notes": len(vault.notes),
@@ -366,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
         reason about.
         """
         try:
-            body = self._body(MAX_AUDIO_BODY_BYTES)
+            body = self._body()
         except ValueError as exc:
             self._fail(HTTPStatus.BAD_REQUEST, str(exc))
             return

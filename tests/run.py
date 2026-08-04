@@ -12,8 +12,9 @@ words, and test_llm.py probes the CLI. That is deliberate: the guarantees they
 check are about a real subprocess with a real argv, and a mock would assert
 that the mock is correct. Pass --fast to skip them.
 
-test_mic.mjs needs node. If node is missing it is reported as skipped, not
-as a pass — a check that did not run is not a check that succeeded.
+test_mic.mjs needs node, and test_keepalive.py needs the server running. If
+either is absent it is reported as SKIP, not as a pass — a check that did not
+run is not a check that succeeded.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ HERE = Path(__file__).resolve().parent
 
 # Cheap and offline first, so a broken build fails in seconds rather than
 # after two minutes of waiting on the model.
-FAST = ["check_ui.py", "test_tools.py", "test_fold.py", "test_memory.py"]
+FAST = ["check_ui.py", "test_tools.py", "test_fold.py", "test_memory.py",
+        "test_keepalive.py"]
 SLOW = ["test_llm.py", "test_brain.py", "test_semantic.py"]
 NODE = ["test_mic.mjs"]
 
@@ -52,6 +54,11 @@ def run(name: str) -> tuple[str, str, float]:
     lines = [ln for ln in out.splitlines() if ln.strip()]
 
     if done.returncode == 0:
+        # A test that stood down still exits 0. Reporting that as a pass is
+        # the one thing a runner must never do.
+        skip = next((ln.strip() for ln in lines if ln.strip().startswith("SKIP")), "")
+        if skip:
+            return "SKIP", skip[4:].strip(), took
         return "OK", lines[-1] if lines else "", took
     # The failing assertions are what you want to see, not the last line.
     fails = [ln.strip() for ln in lines if ln.strip().startswith("FAIL")]
