@@ -30,7 +30,8 @@ HERE = Path(__file__).resolve().parent
 # Cheap and offline first, so a broken build fails in seconds rather than
 # after two minutes of waiting on the model.
 FAST = ["check_ui.py", "test_tools.py", "test_fold.py", "test_memory.py",
-        "test_keepalive.py", "test_file.py", "test_notebook.py", "test_skills.py", "test_edit.py"]
+        "test_keepalive.py", "test_file.py", "test_notebook.py",
+        "test_skills.py", "test_edit.py", "test_share.py"]
 SLOW = ["test_llm.py", "test_brain.py", "test_semantic.py"]
 NODE = ["test_mic.mjs"]
 
@@ -57,14 +58,11 @@ def run(name: str) -> tuple[str, str, float]:
         # A test that stood down still exits 0. Reporting that as a pass is
         # the one thing a runner must never do.
         #
-        # The LAST line, not any line: a test can skip one case in the middle
-        # — a symlink this machine will not create — and still have run
-        # everything else. Treating that as a whole-file skip hid a file that
-        # had actually passed, which is the same lie in the other direction.
-        # The verdict line, not merely the last line: a test that deliberately
-        # provokes a warning on stderr can have it land after its own summary,
-        # and reporting that warning as the result reads like a failure that
-        # passed.
+        # The VERDICT line, not any line and not merely the last one. Two
+        # ways this lied before: a test that skips one case in the middle — a
+        # symlink this machine will not create — was reported as a whole file
+        # skipped, and a test that deliberately provokes a warning on stderr
+        # had that warning land after its summary and read as the result.
         verdict = next((ln.strip() for ln in reversed(lines)
                         if ln.strip().startswith(("OK", "SKIP"))), "")
         if verdict.startswith("SKIP"):
