@@ -90,6 +90,7 @@ async function boot() {
   renderTools();
   renderSkills();
   renderEdits();
+  renderBrowse();
   renderVaultStats();
   rotateExamples();
   applyStageGating();
@@ -1496,6 +1497,74 @@ async function setEditMode(mode) {
     renderEdits(out);
   } catch (err) {
     alert("crit", "Offline", `${err}`);
+  }
+}
+
+// ── navegador ─────────────────────────────────────────────────────────────
+//
+// This panel is the whole safety story now. Edson lifted "never send" and then
+// "never spend", so nothing here is a gate — which makes *seeing* what the
+// browser did the only thing standing between an unwanted action and never
+// finding out about it. Hence the spend count in the header: not decoration,
+// the one number you would want at a glance.
+
+async function renderBrowse(payload) {
+  const list = $("browse-list");
+  if (!list) return;
+  let data = payload;
+  if (!data) {
+    try {
+      data = await fetch("/api/browse").then((r) => r.json());
+    } catch {
+      return;
+    }
+  }
+  if (data.error) { alert("warn", "Navegador", data.error); return; }
+  state.browse = data;
+
+  const now = $("browse-now");
+  if (now) {
+    now.textContent = !data.available ? "indisponível"
+      : data.spent ? `${data.spent} gasto${data.spent > 1 ? "s" : ""}`
+      : data.open ? "aberto" : "fechado";
+  }
+
+  list.replaceChildren();
+  for (const act of (data.recent || []).slice().reverse()) {
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "turn";
+
+    const when = document.createElement("span");
+    when.className = "fact-when";
+    when.textContent = new Date(act.when * 1000).toLocaleTimeString();
+
+    const what = document.createElement("span");
+    what.className = "turn-q";
+    what.textContent = `${act.what} ${act.target}`.slice(0, 60);
+    what.title = act.url || act.target;
+
+    const meta = document.createElement("span");
+    meta.className = "turn-meta";
+    // The class is the point. `spend` is spelled out in full so it cannot be
+    // skimmed past; the others stay quiet.
+    meta.textContent = act.ok
+      ? (act.kind === "spend" ? "GASTO" : act.kind)
+      : `falhou · ${act.detail || ""}`.slice(0, 40);
+    if (act.kind === "spend") meta.style.color = "var(--t-client)";
+
+    row.append(when, what, meta);
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+
+  const note = $("browse-note");
+  if (note) {
+    note.textContent = !data.available
+      ? data.reason
+      : `Perfil em ${data.profile}. Ler é livre, enviar e gastar estão `
+        + `liberados e ficam no diário. Senha você digita na janela — o JARVIS `
+        + `não tem as suas.`;
   }
 }
 

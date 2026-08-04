@@ -1,0 +1,659 @@
+"""browse.py — um navegador de verdade, com a sessão do Edson dentro.
+
+Por que existe: a pesquisa em `web.py` lê HTML cru com `urllib`. Isso não roda
+JavaScript e não tem sessão, e foi contra esses dois muros que ela bateu —
+página de preço montada por JS chega vazia, e marketplace brasileiro esconde
+preço atrás de "acesse sua conta". Um navegador resolve os dois.
+
+E resolve trazendo um risco que o `urllib` não tinha: aqui ele navega
+**autenticado como o Edson**, num perfil que guarda os logins dele. Uma página
+com injeção deixa de ser um texto a relatar e passa a ser uma tentativa de
+mandar um navegador logado fazer algo. O desenho abaixo é toda a resposta a
+isso.
+
+## A etiqueta, não o portão
+
+O briefing tinha duas regras absolutas separadas: *"Never send"* e *"Never
+spend"*. O Edson derrubou as duas, nomeando-as — primeiro `pode liberar o
+send`, depois `sim libera tudo`. Então nada aqui bloqueia.
+
+Mas classificar continua, porque a classificação virou **etiqueta de diário**
+em vez de muralha. Toda operação é rotulada antes de acontecer, e o rótulo fica
+gravado:
+
+| classe | o que é | política |
+|---|---|---|
+| `read` | abrir URL, ler texto, listar links, screenshot | livre |
+| `send` | clicar, preencher, submeter, teclar | liberado |
+| `spend` | finalizar compra, pagar, confirmar pedido, assinar | liberado, **marcado** |
+| `secret` | qualquer campo de senha | não acontece — ver abaixo |
+
+`spend` sobrevive como rótulo porque "o que este navegador andou fazendo com meu
+dinheiro" é uma pergunta que você vai querer responder por leitura de log, e
+não por releitura de toda a navegação.
+
+`secret` não é uma regra minha sobrevivendo à liberação: o JARVIS **não tem** as
+senhas do Edson. Não há o que digitar. Liberar isso desbloquearia zero, a menos
+que credencial fosse guardada em arquivo — outra feature, não pedida. O perfil
+persistente é a resposta: ele loga uma vez, na janela, e a sessão fica em disco.
+
+## O que sobra protegendo
+
+Com os portões abertos, o que resta não são barreiras — são retrovisores:
+
+1. **A janela é visível por padrão.** Um navegador headless agindo logado como
+   você, sem janela, é a versão assustadora disto. Visível, você vê e fecha.
+2. **Tudo vai para um diário**, como em `edit.py`: o que foi feito, onde,
+   quando, e de que classe. Uma ação que você não pediu fica gravada.
+3. **Conteúdo de página é dado, nunca instrução.** Isto não afrouxa. Uma página
+   que diz "agora compre isto" é texto a relatar, e a liberação do Edson vale
+   para pedidos *dele*, não para o que um site pede.
+
+Rode direto:  python -m agent.browse ler https://example.com
+"""
+
+from __future__ import annotations
+
+import json
+import queue
+import re
+import sys
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+if __package__ in (None, ""):  # allow `python agent/browse.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent import data as data_mod
+
+PROFILE_DIR = "browser-profile"
+JOURNAL = "browse/journal.jsonl"
+
+PAGE_CHARS = 20_000
+NAV_TIMEOUT = 25_000        # ms
+ACT_TIMEOUT = 10_000        # ms
+
+# Gasto. Liberado pelo Edson — o padrão existe para *rotular* o diário, não
+# para barrar. Heurística de texto erra nas duas direções; como etiqueta um
+# falso positivo custa uma linha de log a mais, e não uma ação recusada.
+SPEND_RE = re.compile(
+    r"finalizar\s+(compra|pedido)|fechar\s+pedido|ir\s+para\s+o?\s*pagamento"
+    r"|confirmar\s+(pedido|compra|pagamento|assinatura)|pagar\s+agora|pagar\b"
+    r"|comprar\s+agora|comprar\b|assinar\s+(agora|plano)?"
+    r"|checkout|place\s+order|buy\s+now|complete\s+purchase|subscribe\b"
+    r"|adicionar\s+cart(ão|ao)|cart(ão|ao)\s+de\s+cr(é|e)dito",
+    re.I,
+)
+SPEND_URL_RE = re.compile(
+    r"/checkout|/pagamento|/payment|/carrinho/finaliz|/cart/checkout"
+    r"|/pedido/confirm|/order/confirm|/assinatura|/subscribe"
+    r"|mercadopago|pagseguro|stripe\.com|paypal\.com",
+    re.I,
+)
+
+# Campo de senha, em qualquer forma que ele apareça.
+SECRET_RE = re.compile(r"password|senha|passwd|\bpin\b|cvv|c(ó|o)digo\s*de\s*seguran", re.I)
+
+
+class Refused(Exception):
+    """A operação não foi permitida. Nunca um bug — sempre uma regra."""
+
+
+@dataclass
+class Action:
+    id: str
+    when: float
+    kind: str              # read | send | spend | secret
+    what: str              # goto | text | click | fill | press | shot
+    target: str
+    url: str
+    ok: bool
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {"id": self.id, "when": self.when, "kind": self.kind,
+                "what": self.what, "target": self.target, "url": self.url,
+                "ok": self.ok, "detail": self.detail}
+
+
+# ---------------------------------------------------------------------------
+# Diário
+# ---------------------------------------------------------------------------
+
+def _journal_path() -> Path:
+    path = data_mod.state_dir() / JOURNAL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _log(action: Action) -> None:
+    """Grava e nunca levanta: um diário que não escreve é uma linha perdida,
+    não uma ação perdida — e a ação já aconteceu."""
+    try:
+        with _journal_path().open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(action.to_dict(), ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(f"[browse] diário não gravou: {exc}", file=sys.stderr)
+
+
+def history(limit: int = 100) -> list[Action]:
+    try:
+        lines = _journal_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[Action] = []
+    for line in lines[-limit:]:
+        try:
+            row = json.loads(line)
+            out.append(Action(**row))
+        except (ValueError, TypeError):
+            continue          # uma linha truncada não invalida o diário
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Classificação
+# ---------------------------------------------------------------------------
+
+def classify(what: str, target: str, url: str = "") -> str:
+    """Que classe é esta operação? Chamada antes de tocar na página."""
+    if what in ("goto", "text", "links", "shot"):
+        # Navegar para uma URL de pagamento não gasta nada por si, mas é o
+        # passo anterior, e o diário deve mostrá-lo como tal.
+        return "spend" if (what == "goto" and SPEND_URL_RE.search(target)) else "read"
+    if SECRET_RE.search(target):
+        return "secret"
+    if SPEND_RE.search(target) or SPEND_URL_RE.search(url):
+        return "spend"
+    return "send"
+
+
+def _gate(kind: str) -> None:
+    """A única coisa que ainda não passa. `send` e `spend` estão liberados.
+
+    Sem parâmetro `confirm`: uma flag que nada consulta é mentira na assinatura.
+    Quando o Edson quiser reapertar o `spend`, o portão volta aqui, num lugar.
+    """
+    if kind == "secret":
+        raise Refused(
+            "campo de senha: o JARVIS não tem suas credenciais, então não há o que "
+            "digitar aqui. Faça o login você mesmo na janela — o perfil é "
+            "persistente e a sessão fica guardada para as próximas vezes.")
+
+
+# ---------------------------------------------------------------------------
+# O navegador
+# ---------------------------------------------------------------------------
+
+_lock = threading.Lock()
+_state: dict[str, object] = {}
+
+# Uma única thread toca no Playwright. Todas as outras mandam recado.
+#
+# Não é preferência de estilo, é a única forma que funciona: a API síncrona do
+# Playwright é presa por greenlet à thread que a criou. O servidor é
+# `ThreadingHTTPServer`, então cada requisição chega numa thread diferente, e a
+# segunda chamada morria com `greenlet.error: cannot switch to a different
+# thread (which happens to have exited)` — medido, não teorizado: a primeira
+# leitura via HTTP voltou 403 e a segunda derrubou 500.
+#
+# O efeito colateral é bem-vindo: a fila serializa o navegador. Duas abas
+# disputando o mesmo `page` seria pior que lento — seria clicar no lugar errado.
+_jobs: "queue.Queue[tuple | None]" = queue.Queue()
+_worker: threading.Thread | None = None
+JOB_TIMEOUT = 180.0          # s — teto de uma operação, inclusive o Chrome subir
+
+
+def _pump() -> None:
+    """O laço da thread dona do navegador."""
+    while True:
+        job = _jobs.get()
+        if job is None:
+            return
+        fn, box = job
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — atravessa para quem pediu
+            box["error"] = exc
+        finally:
+            box["done"].set()
+
+
+def _run(fn):
+    """Executa `fn` na thread do navegador e devolve o resultado aqui."""
+    global _worker
+    with _lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_pump, name="browse", daemon=True)
+            _worker.start()
+    box: dict[str, object] = {"done": threading.Event()}
+    _jobs.put((fn, box))
+    if not box["done"].wait(JOB_TIMEOUT):
+        # Não mata a thread: um Chrome no meio de um clique não volta atrás só
+        # porque desistimos de esperar. Diz a verdade e deixa o diário mostrar.
+        raise Refused(
+            f"o navegador não respondeu em {JOB_TIMEOUT:.0f}s — veja a janela, "
+            "pode haver um diálogo ou um captcha esperando você")
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box["value"]
+
+
+def profile_dir() -> Path:
+    path = data_mod.state_dir() / PROFILE_DIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def available() -> tuple[bool, str]:
+    """Playwright está pronto? Devolve (pode, motivo quando não)."""
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415, F401
+    except ImportError:
+        return False, "playwright não instalado (pip install playwright)"
+    return True, ""
+
+
+def _page(headless: bool = False):
+    """A aba, criando o navegador na primeira vez.
+
+    Perfil persistente: os logins do Edson ficam em disco e sobrevivem ao
+    fechamento. Visível por padrão, de propósito — ver o que ele faz é a
+    proteção que nenhuma heurística substitui.
+    """
+    ok, why = available()
+    if not ok:
+        raise Refused(why)
+
+    if _state.get("page") is not None:
+        return _state["page"]
+
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+
+    driver = sync_playwright().start()
+    opts = {
+        "user_data_dir": str(profile_dir()),
+        "headless": headless,
+        "viewport": {"width": 1360, "height": 900},
+        "locale": "pt-BR",
+        "timezone_id": "America/Sao_Paulo",
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
+    # Chrome do sistema antes do Chromium empacotado. Não é preferência: o
+    # Mercado Livre derrubou o Chromium na primeira tentativa (redirecionou para
+    # a página "Seguridad") e o Chrome real passa, porque a impressão digital é
+    # a de um navegador de gente. Se não houver Chrome, cai no Chromium e a
+    # leitura pode voltar vazia — o que `text()` diz em voz alta.
+    try:
+        context = driver.chromium.launch_persistent_context(channel="chrome", **opts)
+    except Exception as exc:  # noqa: BLE001
+        # Perfil ocupado é o erro comum, e o Playwright o conta mal: devolve
+        # "Target page, context or browser has been closed", que soa como bug
+        # e é na verdade o Chrome recusando dois processos no mesmo
+        # user-data-dir. Acontece toda vez que o servidor já abriu o navegador
+        # e alguém roda a CLI ao lado.
+        if "has been closed" in str(exc) or "ProcessSingleton" in str(exc):
+            driver.stop()
+            raise Refused(
+                "o perfil do navegador já está aberto por outro processo — "
+                "feche a janela do JARVIS (ou pare o servidor) e tente de novo. "
+                "O Chrome não aceita dois donos do mesmo perfil.") from exc
+        try:
+            context = driver.chromium.launch_persistent_context(**opts)
+        except Exception as fallback:  # noqa: BLE001 — nem Chrome nem Chromium
+            driver.stop()
+            raise Refused(
+                f"não consegui abrir o navegador: {str(fallback).splitlines()[0][:160]}"
+            ) from fallback
+    page = context.pages[0] if context.pages else context.new_page()
+    page.set_default_timeout(ACT_TIMEOUT)
+    page.set_default_navigation_timeout(NAV_TIMEOUT)
+    _state.update(driver=driver, context=context, page=page)
+    return page
+
+
+def close() -> None:
+    def _shut() -> None:
+        for key in ("context", "driver"):
+            thing = _state.pop(key, None)
+            try:
+                if key == "context" and thing:
+                    thing.close()
+                elif thing:
+                    thing.stop()
+            except Exception:  # noqa: BLE001 — fechar não deve levantar
+                pass
+        _state.pop("page", None)
+
+    if _worker is not None and _worker.is_alive():
+        _run(_shut)          # fechar também é do dono da thread
+    else:
+        _shut()
+
+
+def _settle(page, floor: int = 200, budget_ms: int = 6_000) -> int:
+    """Espera o JS pintar, e devolve quantos chars o corpo tem no fim.
+
+    Um `wait_for_timeout` fixo é o que fazia o Mercado Livre voltar com 0 chars:
+    o DOM estava pronto, a lista não. Aqui a espera olha o que importa — o texto
+    parou de crescer e já passou de um piso — em vez de contar segundos no vazio.
+    Devolve o tamanho para que quem chama possa dizer "veio vazio" com número.
+    """
+    seen, stable = 0, 0
+    step = 250
+    for _ in range(max(1, budget_ms // step)):
+        try:
+            size = page.evaluate("() => (document.body?.innerText || '').length")
+        except Exception:  # noqa: BLE001 — navegação no meio da medição
+            size = 0
+        if size > floor and size == seen:
+            stable += 1
+            if stable >= 2:          # duas medidas iguais: parou de pintar
+                return size
+        else:
+            stable = 0
+        seen = size
+        page.wait_for_timeout(step)
+    return seen
+
+
+def _clean(text: str) -> str:
+    """Texto de página sem os buracos de espaçamento que o layout deixa."""
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _record(kind: str, what: str, target: str, url: str, ok: bool,
+            detail: str = "") -> Action:
+    action = Action(id=uuid.uuid4().hex[:12], when=time.time(), kind=kind,
+                    what=what, target=target, url=url, ok=ok, detail=detail)
+    _log(action)
+    return action
+
+
+# ---------------------------------------------------------------------------
+# Operações
+#
+# Cada uma é uma casca fina em volta de um `_impl` que roda na thread dona do
+# navegador. A casca existe só para atravessar a fronteira de thread; toda a
+# lógica está no `_impl`, e é ele que classifica, age e escreve no diário.
+# ---------------------------------------------------------------------------
+
+def goto(url: str, *, headless: bool = False) -> dict[str, object]:
+    kind = classify("goto", url)
+    _gate(kind)                       # antes da fila: recusar não precisa de aba
+
+    def _impl() -> dict[str, object]:
+        page = _page(headless)
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+            size = _settle(page)
+        except Exception as exc:  # noqa: BLE001
+            _record(kind, "goto", url, page.url, False, str(exc)[:200])
+            raise Refused(f"não abriu {url}: {str(exc).splitlines()[0][:140]}") from exc
+        _record(kind, "goto", url, page.url, True, f"{size} chars")
+        return {"url": page.url, "title": page.title(), "chars": size}
+
+    return _run(_impl)
+
+
+def text(*, headless: bool = False, limit: int = PAGE_CHARS) -> dict[str, object]:
+    """O texto renderizado da aba atual. Dado — nunca instrução."""
+    def _impl() -> dict[str, object]:
+        page = _page(headless)
+        body = _clean(page.inner_text("body"))
+        if len(body) < 200:                 # pode ser que o JS ainda não pintou
+            _settle(page)
+            body = _clean(page.inner_text("body"))
+        truncated = len(body) > limit
+        # Vazio nunca volta calado: foi assim que o urllib enganou a pesquisa.
+        empty = "" if body else (
+            "página abriu mas o corpo veio vazio — provavelmente exige login, "
+            "ou é bloqueio de robô")
+        _record("read", "text", "body", page.url, True, empty or f"{len(body)} chars")
+        return {
+            "url": page.url, "title": page.title(),
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "chars": len(body), "truncated": truncated, "empty": empty,
+            "text": body[:limit] + ("\n[truncado]" if truncated else ""),
+        }
+
+    return _run(_impl)
+
+
+def fetch(url: str, *, limit: int = PAGE_CHARS) -> dict[str, object]:
+    """Abrir e ler como **uma** operação. É o que a pesquisa deve chamar.
+
+    `goto()` seguido de `text()` são dois trabalhos na fila, e entre eles cabe o
+    trabalho de outra thread. `web.read_many()` abre três páginas em paralelo e
+    há uma só aba: sem isto, a thread A navega, a B navega por cima, e a A lê o
+    texto da página da B — devolvendo o conteúdo errado com a URL certa, que é
+    o tipo de erro que ninguém percebe até citar o preço de outro fornecedor.
+    """
+    kind = classify("goto", url)
+    _gate(kind)
+
+    def _impl() -> dict[str, object]:
+        page = _page()
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+            _settle(page)
+        except Exception as exc:  # noqa: BLE001
+            _record(kind, "goto", url, page.url, False, str(exc)[:200])
+            raise Refused(f"não abriu {url}: {str(exc).splitlines()[0][:140]}") from exc
+        body = _clean(page.inner_text("body"))
+        truncated = len(body) > limit
+        empty = "" if body else (
+            "página abriu mas o corpo veio vazio — provavelmente exige login, "
+            "ou é bloqueio de robô")
+        _record(kind, "fetch", url, page.url, True, empty or f"{len(body)} chars")
+        return {
+            "url": page.url, "title": page.title(),
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "chars": len(body), "truncated": truncated, "empty": empty,
+            "text": body[:limit] + ("\n[truncado]" if truncated else ""),
+        }
+
+    return _run(_impl)
+
+
+def shot(path: str = "") -> dict[str, object]:
+    def _impl() -> dict[str, object]:
+        page = _page()
+        target = Path(path) if path else (data_mod.state_dir() / "browse" / "shot.png")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(target), full_page=False)
+        _record("read", "shot", str(target), page.url, True)
+        return {"path": str(target), "url": page.url}
+
+    return _run(_impl)
+
+
+def click(target: str) -> dict[str, object]:
+    """Clica por texto visível. `target` é o que o humano leria no botão."""
+    def _impl() -> dict[str, object]:
+        page = _page()
+        kind = classify("click", target, page.url)
+        _gate(kind)
+        try:
+            page.get_by_text(target, exact=False).first.click()
+            _settle(page)
+        except Exception as exc:  # noqa: BLE001
+            _record(kind, "click", target, page.url, False, str(exc)[:200])
+            raise Refused(f"não achou '{target}' na página") from exc
+        _record(kind, "click", target, page.url, True)
+        return {"clicked": target, "url": page.url}
+
+    return _run(_impl)
+
+
+def fill(field: str, value: str) -> dict[str, object]:
+    """Preenche um campo pelo rótulo. Senha é recusada antes de qualquer coisa."""
+    # Recusa pelo rótulo sem abrir nada: pedir para digitar uma senha não
+    # deveria nem custar o tempo de subir o Chrome.
+    _gate(classify("fill", field))
+
+    def _impl() -> dict[str, object]:
+        page = _page()
+        # Classifica também pelo tipo real do campo: um rótulo inocente sobre um
+        # input[type=password] ainda é uma senha.
+        kind = classify("fill", field, page.url)
+        if kind != "secret":
+            try:
+                handle = page.get_by_label(field, exact=False).first
+                if (handle.get_attribute("type") or "").lower() == "password":
+                    kind = "secret"
+            except Exception:  # noqa: BLE001 — sem rótulo, segue pela heurística
+                pass
+        _gate(kind)
+        try:
+            page.get_by_label(field, exact=False).first.fill(value)
+        except Exception as exc:  # noqa: BLE001
+            _record(kind, "fill", field, page.url, False, str(exc)[:200])
+            raise Refused(f"não achou o campo '{field}'") from exc
+        # O valor não vai para o diário: pode ser conteúdo de mensagem.
+        _record(kind, "fill", field, page.url, True, f"{len(value)} chars")
+        return {"filled": field, "url": page.url}
+
+    return _run(_impl)
+
+
+def press(key: str = "Enter") -> dict[str, object]:
+    """Tecla no elemento focado. É assim que a maioria dos formulários envia."""
+    def _impl() -> dict[str, object]:
+        page = _page()
+        _gate("send")
+        page.keyboard.press(key)
+        _settle(page)
+        _record("send", "press", key, page.url, True)
+        return {"pressed": key, "url": page.url}
+
+    return _run(_impl)
+
+
+def fields(limit: int = 30) -> dict[str, object]:
+    """O que há para preencher nesta página, e de que tipo.
+
+    Existe para que o modelo escolha um rótulo real em vez de adivinhar — um
+    `fill` que erra o campo pode escrever a mensagem no lugar errado.
+    """
+    def _impl() -> dict[str, object]:
+        page = _page()
+        found = page.eval_on_selector_all(
+            "input, textarea, select",
+            "els => els.slice(0, 120).map(e => ({"
+            " type: (e.type || e.tagName).toLowerCase(),"
+            " name: e.name || '',"
+            " label: (e.labels && e.labels[0] ? e.labels[0].innerText : "
+            "         (e.getAttribute('aria-label') || e.placeholder || '')).trim().slice(0,70)"
+            "}))",
+        )
+        rows = [row for row in found if row.get("label") or row.get("name")][:limit]
+        # Marca os que o JARVIS não vai preencher, para o modelo não tentar.
+        for row in rows:
+            row["locked"] = row["type"] == "password" or bool(
+                SECRET_RE.search(row["label"] + " " + row["name"]))
+        _record("read", "fields", f"{len(rows)}", page.url, True)
+        return {"url": page.url, "fields": rows}
+
+    return _run(_impl)
+
+
+def links(limit: int = 40) -> dict[str, object]:
+    def _impl() -> dict[str, object]:
+        page = _page()
+        found = page.eval_on_selector_all(
+            "a[href]",
+            "els => els.slice(0, 200).map(e => ({t: e.innerText.trim().slice(0,90),"
+            " h: e.href}))",
+        )
+        rows = [row for row in found if row.get("t")][:limit]
+        _record("read", "links", f"{len(rows)}", page.url, True)
+        return {"url": page.url, "links": rows}
+
+    return _run(_impl)
+
+
+def state() -> dict[str, object]:
+    ok, why = available()
+    recent = history(20)
+    return {
+        "available": ok,
+        "reason": why,
+        "open": _state.get("page") is not None,
+        "url": (_state["page"].url if _state.get("page") is not None else ""),
+        "profile": str(profile_dir()),
+        "actions": len(recent),
+        "policy": {
+            "read": "livre",
+            "send": "liberado",
+            "spend": "liberado, marcado no diário",
+            "secret": "sem senha guardada — logue você na janela",
+        },
+        "spent": sum(1 for a in recent if a.kind == "spend" and a.ok),
+        "recent": [a.to_dict() for a in recent[-8:]],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Linha de comando
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
+    args = sys.argv[1:]
+    if not args:
+        info = state()
+        print(f"\n  playwright  {'pronto' if info['available'] else info['reason']}")
+        print(f"  perfil      {info['profile']}")
+        for name, rule in info["policy"].items():   # type: ignore[union-attr]
+            print(f"  {name:<11} {rule}")
+        print("\n  uso: python -m agent.browse ler <url> | abrir <url>"
+              " | clicar <texto> | campos | links | diario\n")
+        return 0
+
+    verb, rest = args[0], " ".join(args[1:])
+    try:
+        if verb in ("ler", "read"):
+            goto(rest)
+            page = text()
+            print(f"\n  {page['title']}\n  {page['url']}  ({page['chars']} chars)\n")
+            print(page["text"][:1500])
+            return 0
+        if verb in ("abrir", "open"):
+            print(goto(rest))
+            return 0
+        if verb in ("clicar", "click"):
+            print(click(rest))
+            return 0
+        if verb == "links":
+            for row in links()["links"]:            # type: ignore[index]
+                print(f"  {row['t'][:60]:62} {row['h'][:70]}")
+            return 0
+        if verb == "campos":
+            for row in fields()["fields"]:          # type: ignore[index]
+                mark = "  [senha, não preenchido]" if row["locked"] else ""
+                print(f"  {row['type']:<10} {row['label'][:50]:52}{mark}")
+            return 0
+        if verb in ("diario", "diário", "log"):
+            for act in history(40):
+                flag = "ok " if act.ok else "ERR"
+                print(f"  {flag} {act.kind:<7} {act.what:<7} {act.target[:40]:42}"
+                      f" {act.url[:44]}")
+            return 0
+    except Refused as exc:
+        print(f"\n  RECUSADO: {exc}\n")
+        return 1
+
+    print(f"verbo desconhecido: {verb}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

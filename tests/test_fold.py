@@ -11,6 +11,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# This suite prints the very characters it exists to test — ligatures, accents.
+# Without this, running it from a cp1252 console dies on 'ﬁ' and looks like a
+# real failure: `UnicodeEncodeError` in the *print*, not in the fold.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
+
 # The demo vault, always, and built somewhere temporary — these
 # assertions are about ITS content. Without this the suite passes or
 # fails depending on wherever JARVIS_VAULTS points today, which is

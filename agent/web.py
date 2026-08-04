@@ -481,23 +481,87 @@ class _Text(HTMLParser):
         return re.sub(r"\n\s*\n\s*\n+", "\n\n", joined).strip()
 
 
-def read(url: str, *, limit: int = PAGE_CHARS) -> dict[str, object]:
+# Quando vale a pena pagar o Chrome.
+#
+# "Texto curto" sozinho não serve como sinal, e isso foi medido: `example.com`
+# tem 129 chars de texto e está *completa*, e subir o navegador para ela custou
+# 6,5 s por nada. O que separa uma página curta de uma casca de aplicação JS é
+# a proporção — quanto HTML veio para quão pouco texto saiu.
+#
+#   example.com          1.256 bytes de HTML /   129 de texto  →  ~10×
+#   lista.mercadolivre   ~800k bytes de HTML /   369 de texto  →  >2000×
+#
+# Abaixo do piso de texto E acima da razão, é casca: o conteúdo está no JS.
+THIN_PAGE_CHARS = 900
+THIN_PAGE_RATIO = 25
+
+
+def read(url: str, *, limit: int = PAGE_CHARS,
+         render: bool = True) -> dict[str, object]:
     """Texto de uma página, com a hora em que foi lida.
+
+    Duas leituras, nesta ordem: `urllib` primeiro, navegador só se precisar.
+
+    O `urllib` é ordens de grandeza mais barato e resolve a maioria das páginas —
+    subir o Chrome para ler uma nota técnica em HTML estático seria desperdício
+    a cada pesquisa. Mas ele falha exatamente onde o Edson mais pergunta: preço
+    de material em marketplace brasileiro, que é JS puro atrás de parede de robô.
+    Medido nos dois: `lista.mercadolivre.com.br` deu 0 preços por `urllib` e 10
+    pelo Chrome com o perfil dele.
+
+    `render=False` desliga a segunda tentativa, para quem quer só a leitura
+    barata (e para os testes, que não devem abrir navegador).
 
     O que volta é **dado**. Quem monta o prompt tem de cercá-lo como tal: uma
     instrução escrita dentro de uma página é conteúdo a relatar, não ordem a
-    cumprir.
+    cumprir. Isso não muda com o navegador — muda para pior, porque agora a
+    página foi aberta com a sessão logada do Edson.
     """
-    parser = _Text()
-    parser.feed(_open(url))
-    parser.close()
-    body = parser.text()
+    body, how, failure, raw = "", "urllib", "", 0
+    try:
+        html = _open(url)
+        raw = len(html)
+        parser = _Text()
+        parser.feed(html)
+        parser.close()
+        body = parser.text()
+    except WebUnavailable as exc:
+        failure = str(exc)
+
+    # 404 e 410 não voltam para o navegador. A página não existe, e o Chrome
+    # renderiza alegremente o "artigo inexistente" do site — 3.836 chars de
+    # menu e sugestões que chegam ao modelo com cara de conteúdo. Medido numa
+    # URL errada da Wikipedia: a leitura "deu certo" e trazia uma página que
+    # não era a pedida. 403 e 429 são o oposto: é justamente o bloqueio de robô
+    # que o navegador logado atravessa.
+    gone = bool(re.search(r"HTTP (404|410)\b", failure))
+
+    shell = not body or (len(body) < THIN_PAGE_CHARS
+                         and raw / max(1, len(body)) > THIN_PAGE_RATIO)
+    if render and shell and not gone:
+        try:
+            from agent import browse  # noqa: PLC0415 — import tardio: opcional
+            ok, _why = browse.available()
+            if ok:
+                # fetch(), não goto()+text(): read_many lê em paralelo e a aba
+                # é uma só. Ver a docstring de browse.fetch.
+                rendered = browse.fetch(url, limit=limit)
+                if len(str(rendered.get("text") or "")) > len(body):
+                    body = str(rendered["text"])
+                    how, failure = "chrome", ""
+        except Exception as exc:  # noqa: BLE001 — navegador é melhoria, não muleta
+            failure = failure or f"navegador não abriu: {str(exc)[:120]}"
+
+    if not body and failure:
+        raise WebUnavailable(failure)
+
     truncated = len(body) > limit
     return {
         "url": url,
         "domain": domain_of(url),
         "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "chars": len(body),
+        "how": how,              # quem leu: importa para explicar página vazia
         "truncated": truncated,
         "text": body[:limit] + ("\n[truncado]" if truncated else ""),
     }

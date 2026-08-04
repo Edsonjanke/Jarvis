@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import (brain, data as data_mod, edit, embed, llm, memory,
+from agent import (brain, browse, data as data_mod, edit, embed, llm, memory,
                    notebook, skills, tools, voice)
 from agent.vault import Vault
 
@@ -427,6 +427,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/undo":
                 self._undo()
                 return
+            if route == "/api/browse":
+                self._browse()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -703,6 +706,65 @@ class Handler(BaseHTTPRequestHandler):
         STORE.rebuild()
         self._json({"ok": True, "change": change.to_dict(), **edit.state()})
 
+    def _browse(self) -> None:
+        """Drive the real browser, in the profile that holds Edson's logins.
+
+        Every verb here is a labelled journal entry before it is an action, and
+        the label survives even when nothing is gated: `spend` is the one you
+        will want to grep for later, so it stays a class even though Edson
+        lifted the block on it.
+
+        No STORE.rebuild(): unlike /api/edit this touches the web, never the
+        vault, so the index cannot go stale from anything done here.
+        """
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        action = str(body.get("action") or "state")
+        try:
+            if action == "state":
+                self._json(browse.state())
+                return
+            if action == "goto":
+                result = browse.goto(str(body.get("url") or ""))
+            elif action == "read":
+                # goto + text in one call: the page the model wants to read is
+                # almost never the page already open, and two round trips
+                # doubled the chance of reading a half-painted DOM.
+                url = str(body.get("url") or "")
+                if url:
+                    browse.goto(url)
+                result = browse.text()
+            elif action == "click":
+                result = browse.click(str(body.get("target") or ""))
+            elif action == "fill":
+                result = browse.fill(str(body.get("field") or ""),
+                                     str(body.get("value") or ""))
+            elif action == "press":
+                result = browse.press(str(body.get("key") or "Enter"))
+            elif action == "fields":
+                result = browse.fields()
+            elif action == "links":
+                result = browse.links()
+            elif action == "shot":
+                result = browse.shot()
+            elif action == "close":
+                browse.close()
+                result = {"closed": True}
+            else:
+                self._fail(HTTPStatus.BAD_REQUEST,
+                           "action must be state, goto, read, click, fill, "
+                           "press, fields, links, shot or close")
+                return
+        except browse.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+
+        self._json({"ok": True, **result, **browse.state()})
+
     def _forget_turn(self) -> None:
         """Delete one recorded turn, or a whole conversation.
 
@@ -805,6 +867,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/edit":
             self._json(edit.state())
+            return
+
+        if route == "/api/browse":
+            self._json(browse.state())
             return
 
         if route == "/api/history":
