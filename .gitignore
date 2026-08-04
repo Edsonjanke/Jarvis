@@ -7,6 +7,11 @@
 # Generated demo fixtures. Rebuild with: python data/generate.py
 data/demo_vault/
 
+# The real vault. Edson's own notes live here and the repo is public — this
+# line is the only thing between them and GitHub. Remove it deliberately or
+# not at all.
+data/Cofre/
+
 # Remembered facts are personal. Delete this line if you want them versioned.
 memory/*.md
 

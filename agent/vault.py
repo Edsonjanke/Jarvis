@@ -132,6 +132,15 @@ DRAW_STOP_RE = re.compile(
 )
 
 WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|([^\[\]]*))?\]\]")
+# A markdown link to another note is a link, same as a wikilink. External URLs
+# and anchors are not — those are filtered when the target is resolved.
+MDLINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?([^)>\s#]+)")
+# Plain prose often names a file without linking it at all. Edson's INDEX.md
+# lists every skill as `analise-bordero/SKILL.md` in backticks — a reference by
+# any reasonable reading, and the only structure that file has.
+CODEPATH_RE = re.compile(r"`([^`\n]{3,120}?\.(?:md|markdown|txt|pdf))`", re.IGNORECASE)
+# Filenames that mean "this folder", so the folder can be linked as a unit.
+INDEX_FILENAMES = {"SKILL", "README", "INDEX", "_INDEX", "OVERVIEW"}
 TAG_RE = re.compile(r"(?<![\w&/#])#([A-Za-z][\w/-]{1,40})")
 H1_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*$", re.MULTILINE)
 # Accented Latin letters are word characters. An ASCII-only class silently
@@ -448,24 +457,36 @@ class Vault:
             mtime=mtime,
             warning=warning,
         )
-        note.raw_links = [
-            (m.group(1) or "").strip()
-            for m in WIKILINK_RE.finditer(body)
-            if (m.group(1) or "").strip()
-        ]
+        # Three ways one note points at another, in descending explicitness.
+        # A vault of Claude Skills has none of the first two and only the
+        # third, so taking only wikilinks leaves the graph as loose dust.
+        seen_links: dict[str, None] = {}
+        for pattern in (WIKILINK_RE, MDLINK_RE, CODEPATH_RE):
+            for match in pattern.finditer(body):
+                target = (match.group(1) or "").strip()
+                if target and "://" not in target:
+                    seen_links.setdefault(target, None)
+        note.raw_links = list(seen_links)
         if warning:
             self.skipped.append(SkippedFile(str(path), warning))
         return note
 
     @staticmethod
     def _title_for(meta: dict[str, object], body: str, path: Path) -> str:
-        raw = meta.get("title")
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
+        # `name:` before `title:` — Claude Skills name themselves in `name:`,
+        # and without it a folder of SKILL.md files all end up titled "SKILL".
+        for key in ("title", "name"):
+            raw = meta.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
         match = H1_RE.search(body[:4000])
         if match:
             return match.group(1).strip().strip("#").strip()
-        return path.stem.replace("-", " ").replace("_", " ").strip() or path.name
+        # A bare index filename says nothing; the folder it sits in does.
+        stem = path.stem
+        if stem.upper() in INDEX_FILENAMES and path.parent.name:
+            stem = path.parent.name
+        return stem.replace("-", " ").replace("_", " ").strip() or path.name
 
     @staticmethod
     def _pdf_title(body: str, path: Path) -> str:
@@ -533,9 +554,9 @@ class Vault:
                 by_key.setdefault(key, note.id)
 
         for note in self.notes.values():
+            folder = note.rel.rsplit("/", 1)[0] if "/" in note.rel else ""
             for target in note.raw_links:
-                key = self._normalise(target)
-                other = by_key.get(key) or by_key.get(key.rsplit("/", 1)[-1])
+                other = self._resolve(target, folder, by_key)
                 if other is None or other == note.id:
                     if other is None:
                         self.unresolved[target] += 1
@@ -543,10 +564,72 @@ class Vault:
                 note.out.add(other)
                 self.notes[other].back.add(note.id)
 
+        self._link_by_folder()
+
+    def _resolve(self, target: str, folder: str, by_key: dict[str, str]) -> str | None:
+        """Find the note a link points at, trying the ways links are written.
+
+        A markdown link is relative to the file that contains it, so
+        `references/schemas.md` inside skill-creator/SKILL.md means
+        skill-creator/references/schemas.md — resolving only against the vault
+        root misses every relative link in a nested folder.
+        """
+        key = self._normalise(target)
+        candidates = [key]
+        if folder:
+            candidates.append(self._normalise(f"{folder}/{target}"))
+        # Same paths without the extension, then the bare filename either way.
+        for base in list(candidates):
+            if "." in base.rsplit("/", 1)[-1]:
+                candidates.append(base.rsplit(".", 1)[0])
+        tail = key.rsplit("/", 1)[-1]
+        candidates.append(tail)
+        if "." in tail:
+            candidates.append(tail.rsplit(".", 1)[0])
+
+        for candidate in candidates:
+            hit = by_key.get(candidate)
+            if hit:
+                return hit
+        return None
+
+    def _link_by_folder(self) -> None:
+        """Attach each note to the index file that owns its folder.
+
+        Some vaults carry their structure in the directory tree and write no
+        links at all — a theme under theme-factory/themes/ belongs to
+        theme-factory/SKILL.md whether or not anything says so. Without this
+        such a vault draws as unconnected dust, which is true to the text and
+        useless to look at.
+
+        Only ever adds edges the folder layout already implies; it never
+        invents a relationship between siblings in unrelated folders.
+        """
+        owners: dict[str, str] = {}
+        for note in self.notes.values():
+            if note.path.stem.upper() in INDEX_FILENAMES:
+                folder = note.rel.rsplit("/", 1)[0] if "/" in note.rel else ""
+                owners.setdefault(f"{note.root}/{folder}", note.id)
+
+        for note in self.notes.values():
+            if note.path.stem.upper() in INDEX_FILENAMES and note.rel.count("/") == 0:
+                continue                       # the root index owns, is not owned
+            folder = note.rel.rsplit("/", 1)[0] if "/" in note.rel else ""
+            while True:
+                owner = owners.get(f"{note.root}/{folder}")
+                if owner and owner != note.id:
+                    note.out.add(owner)
+                    self.notes[owner].back.add(note.id)
+                    break
+                if not folder:
+                    break
+                folder = folder.rsplit("/", 1)[0] if "/" in folder else ""
+
     def _keys_for(self, note: Note) -> list[str]:
         keys = [
             self._normalise(note.title),
             self._normalise(note.path.stem),
+            self._normalise(note.path.name),      # filename with extension
             self._normalise(note.rel),
             self._normalise(note.rel.rsplit(".", 1)[0]),
         ]
