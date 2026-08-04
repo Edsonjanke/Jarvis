@@ -403,7 +403,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "notes": len(vault.notes),
                             "seconds": round(vault.build_seconds, 3)})
                 return
-            if route in ("/api/ask", "/api/brief", "/api/plan"):
+            if route in ("/api/ask", "/api/brief", "/api/plan", "/api/research"):
                 self._think(route)
                 return
             if route == "/api/listen":
@@ -457,6 +457,9 @@ class Handler(BaseHTTPRequestHandler):
                 answer = brain.ask(vault, str(body.get("q") or ""), thread, images)
             elif route == "/api/plan":
                 answer = brain.plan(vault, str(body.get("goal") or ""))
+            elif route == "/api/research":
+                answer = brain.research(vault, str(body.get("q") or ""),
+                                        str(body.get("mode") or "search"), thread)
             else:
                 answer = brain.brief(vault)
         except llm.LLMUnavailable as exc:

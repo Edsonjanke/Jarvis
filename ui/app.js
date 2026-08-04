@@ -603,7 +603,11 @@ async function think(kind, payload, label) {
   thinking = true;
   setReactor("thinking", kind);
   state.level = 0.55;
-  hint(`Reading the vault…`);
+  // Research is the slow one — it searches, then opens the first pages — and
+  // "Reading the vault…" for fifteen seconds reads as a hang. Say what it is
+  // actually doing.
+  hint(kind === "research" ? "Buscando na web e abrindo as páginas…"
+                           : "Reading the vault…");
 
   let res;
   try {
@@ -629,7 +633,8 @@ async function think(kind, payload, label) {
 
   if (res.error) {
     hint(res.error);
-    alert("warn", kind === "brief" ? "Brief" : kind === "plan" ? "Plan" : "Ask", res.error);
+    alert("warn", kind === "brief" ? "Brief" : kind === "plan" ? "Plan"
+                : kind === "research" ? "Web" : "Ask", res.error);
     return stopThinking();
   }
 
@@ -748,6 +753,12 @@ function renderAnswer(res) {
 
 $("btn-brief").addEventListener("click", () => think("brief", {}, "brief"));
 $("btn-plan").addEventListener("click", () => think("plan", { goal: input.value }, input.value));
+
+// "research" mode rather than "search": it opens the first pages, because a
+// figure lives inside a page and not in a snippet. That costs seconds, and the
+// seconds are the point of the button.
+$("btn-web").addEventListener("click",
+  () => think("research", { q: input.value, mode: "research" }, input.value));
 
 // ── voice ─────────────────────────────────────────────────────────────────
 //
