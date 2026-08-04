@@ -31,6 +31,7 @@ const state = {
   thread: "",
   tools: null,
   skills: null,
+  edit: null,
 };
 
 // ── alerts ────────────────────────────────────────────────────────────────
@@ -86,6 +87,7 @@ async function boot() {
   renderBrains();
   renderTools();
   renderSkills();
+  renderEdits();
   renderVaultStats();
   rotateExamples();
   applyStageGating();
@@ -1250,6 +1252,137 @@ $("btn-wake").addEventListener("click", () => {
 // keeping. That is only acceptable if you can see everything it decided and
 // throw any of it away — so this panel is not a nicety, it is the other half
 // of letting it write at all.
+
+// ── alterações no vault ───────────────────────────────────────────────────
+//
+// JARVIS can now change files you made — files it did not create and cannot
+// recreate. Your own Evo-SI audit says there is no backup of anything, so the
+// undo journal is not a nicety here, it is the backup.
+//
+// Which makes this panel load-bearing rather than decorative: a write you did
+// not see happen is the only unacceptable kind. Everything that changed is
+// listed, with its size before and after, and a button that puts it back.
+
+async function renderEdits(payload) {
+  const list = $("edit-list");
+  if (!list) return;
+  let data = payload;
+  if (!data) {
+    try {
+      data = await fetch("/api/edit").then((r) => r.json());
+    } catch {
+      return;
+    }
+  }
+  if (data.error) { alert("warn", "Alterações", data.error); return; }
+  state.edit = data;
+
+  const now = $("edit-now");
+  if (now) {
+    const live = (data.changes || []).filter((c) => !c.undone).length;
+    now.textContent = live ? `${live}` : "nenhuma";
+  }
+
+  const modes = $("edit-modes");
+  modes.replaceChildren();
+  for (const m of data.modes || []) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "brain-row";
+    btn.setAttribute("aria-pressed", String(m === data.mode));
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = m;
+    const note = document.createElement("span");
+    note.className = "brain-note";
+    note.textContent = {
+      manual: "propõe e espera você",
+      auto: "escreve; apagar ainda pergunta",
+      skip: "escreve; apagar ainda pergunta",
+    }[m] || "";
+    btn.append(name, note);
+    btn.addEventListener("click", () => setEditMode(m));
+    li.appendChild(btn);
+    modes.appendChild(li);
+  }
+
+  list.replaceChildren();
+  for (const change of (data.changes || []).slice(0, 20)) {
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "turn";
+
+    const when = document.createElement("span");
+    when.className = "fact-when";
+    when.textContent = new Date(change.when * 1000).toLocaleString();
+
+    const what = document.createElement("span");
+    what.className = "turn-q";
+    what.textContent = (change.path || "").split(/[\\/]/).pop();
+    what.title = change.path;
+
+    const meta = document.createElement("span");
+    meta.className = "turn-meta";
+    meta.textContent = change.undone
+      ? "desfeito"
+      : `${change.action} · ${change.size_before} → ${change.size_after} b`;
+
+    row.append(when, what, meta);
+
+    if (!change.undone) {
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "ghost fact-drop";
+      back.textContent = "Desfazer";
+      back.title = change.had_backup
+        ? "restaura os bytes anteriores"
+        : "o arquivo não existia antes — desfazer o remove";
+      back.addEventListener("click", async () => {
+        back.disabled = true;
+        try {
+          const out = await fetch("/api/undo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: change.id }),
+          }).then((r) => r.json());
+          if (out.error) { alert("warn", "Desfazer", out.error); back.disabled = false; return; }
+          renderEdits(out);
+          boot();                       // the index changed under us
+        } catch (err) {
+          alert("crit", "Offline", `${err}`);
+          back.disabled = false;
+        }
+      });
+      row.appendChild(back);
+    }
+
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+
+  const note = $("edit-note");
+  if (note) {
+    note.textContent = (data.changes || []).length
+      ? `Cópias em ${data.undo_dir}. Nada é sobrescrito sem uma.`
+      : `Pode escrever ${(data.writeable || []).join(", ")} dentro de `
+        + `${(data.roots || []).join(", ") || "(nenhuma pasta)"}. Apagar sempre pergunta.`;
+  }
+}
+
+async function setEditMode(mode) {
+  try {
+    const out = await fetch("/api/edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "mode", mode }),
+    }).then((r) => r.json());
+    if (out.error) { alert("warn", "Alterações", out.error); return; }
+    renderEdits(out);
+  } catch (err) {
+    alert("crit", "Offline", `${err}`);
+  }
+}
 
 // ── habilidades ───────────────────────────────────────────────────────────
 //

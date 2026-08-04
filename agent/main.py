@@ -26,8 +26,8 @@ from urllib.parse import parse_qs, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent import (brain, data as data_mod, embed, llm, memory, notebook,
-                   skills, tools, voice)
+from agent import (brain, data as data_mod, edit, embed, llm, memory,
+                   notebook, skills, tools, voice)
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -141,6 +141,10 @@ def capabilities() -> dict[str, object]:
         # skill that silently failed to load is an instruction you believe is
         # in effect and is not.
         "skills": skills.state(),
+        # Writing to your own folders. Off the leash by your explicit choice,
+        # and reported here so the page can say so — a program that can change
+        # your documents should never be quiet about it.
+        "edit": {"mode": edit.mode(), "changes": len(edit.changes(limit=200))},
         "stage": 5,
         "stage_note": "",
     }
@@ -373,6 +377,12 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/history/forget":
                 self._forget_turn()
                 return
+            if route == "/api/edit":
+                self._edit()
+                return
+            if route == "/api/undo":
+                self._undo()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -587,6 +597,61 @@ class Handler(BaseHTTPRequestHandler):
         tools.allow(names)
         self._json(tools.state())
 
+    def _edit(self) -> None:
+        """Write, delete, or change the mode. The only route that alters your files.
+
+        Every refusal from edit.py comes back as 403 with the reason, because
+        each one is a rule being enforced rather than a malformed request —
+        "fora do vault" and "apagar exige confirmação" are answers, not faults.
+        """
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        action = str(body.get("action") or "").strip()
+        try:
+            if action == "mode":
+                edit.set_mode(str(body.get("mode") or ""))
+                self._json(edit.state())
+                return
+            if action == "write":
+                change = edit.write(str(body.get("path") or ""),
+                                    str(body.get("content") or ""),
+                                    note=str(body.get("note") or ""))
+            elif action == "remove":
+                change = edit.remove(str(body.get("path") or ""),
+                                     confirm=bool(body.get("confirm")),
+                                     note=str(body.get("note") or ""))
+            else:
+                self._fail(HTTPStatus.BAD_REQUEST,
+                           "action must be write, remove or mode")
+                return
+        except edit.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+
+        # The vault on disk no longer matches the index, and an answer built
+        # from a stale index would cite text that is not there any more.
+        STORE.rebuild()
+        self._json({"ok": True, "change": change.to_dict(), **edit.state()})
+
+    def _undo(self) -> None:
+        """Put a file back. The reason writing was allowed at all."""
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        try:
+            change = edit.undo(str(body.get("id") or ""))
+        except edit.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+        STORE.rebuild()
+        self._json({"ok": True, "change": change.to_dict(), **edit.state()})
+
     def _forget_turn(self) -> None:
         """Delete one recorded turn, or a whole conversation.
 
@@ -685,6 +750,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/skills":
             self._json(skills.state())
+            return
+
+        if route == "/api/edit":
+            self._json(edit.state())
             return
 
         if route == "/api/history":

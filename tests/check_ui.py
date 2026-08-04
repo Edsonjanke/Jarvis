@@ -122,6 +122,20 @@ assert "speechSynthesis?.speaking" in app, "nothing stops it hearing its own ans
 assert "detectSpeech(rec.vad" in app, "audio would be uploaded without a speech check"
 print("always-on listening: local detection, wake word, and no self-triggering.")
 
+# -- writing to the vault ----------------------------------------------------
+#
+# JARVIS can change files it did not create, in a vault with no backup. The
+# only unacceptable kind of write is one you did not see happen, so the panel
+# is load-bearing: everything changed is listed, with a way to put it back.
+assert "async function renderEdits" in app
+assert '"/api/edit"' in app and '"/api/undo"' in app
+assert "renderEdits()" in app, "the changes panel is never populated at boot"
+for element in ("edit-list", "edit-modes", "edit-now", "edit-note"):
+    assert f'id="{element}"' in html, element
+assert "Desfazer" in app, "a change cannot be undone from the page"
+assert "function setEditMode" in app, "the permission mode cannot be changed"
+print("every vault change is visible and undoable from the page.")
+
 # -- skills and standing instructions ----------------------------------------
 #
 # The panel exists mostly to show failures: a skill file with no description
