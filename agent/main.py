@@ -495,6 +495,12 @@ class Handler(BaseHTTPRequestHandler):
             if plan["tool"] == "search":
                 self._search_site(spoken, plan["site"], plan["query"], thread)
                 return
+            if plan["tool"] == "click":
+                self._click_page(spoken, plan.get("target") or spoken, thread)
+                return
+            if plan["tool"] == "read":
+                self._read_page(spoken, thread)
+                return
 
         try:
             if route == "/api/ask":
@@ -746,6 +752,82 @@ class Handler(BaseHTTPRequestHandler):
             return
         STORE.rebuild()
         self._json({"ok": True, "change": change.to_dict(), **edit.state()})
+
+    def _browser_answer(self, said: str, text: str, url: str, thread: str,
+                        tool: str, started: float) -> None:
+        """Uma resposta de navegador, gravada como qualquer outra.
+
+        Nenhuma citação, e isso é correto: uma página não é nota do Cofre e não
+        pode ser citada como se fosse. O rodapé dirá que nada foi citado, que é
+        a verdade.
+        """
+        answer = brain.Answer(
+            kind="browse", question=said, text=text,
+            citations=[], considered=[], recalled=[],
+            usage={"tool": tool, "url": url},
+            seconds=round(time.time() - started, 3),
+        )
+        turn = notebook.record(answer, thread)
+        self._json({**answer.to_dict(), "turn": turn.id, "thread": turn.thread})
+
+    def _click_page(self, said: str, target: str, thread: str) -> None:
+        """Agir na página aberta, escolhendo o alvo por visão.
+
+        Marca cada clicável com um número na própria tela, manda a foto e a
+        lista ao modelo, e clica no que ele apontar. É *set-of-marks*, a técnica
+        do uso-de-computador — e existe porque "o primeiro vídeo da lista" não
+        casa com seletor nenhum. A alternativa era um seletor por site, que é a
+        parede de exceções que o Edson mandou derrubar.
+        """
+        started = time.time()
+        try:
+            shot = browse.marked_shot()
+        except browse.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+
+        rows = shot["candidates"]                       # type: ignore[index]
+        if not rows:
+            self._browser_answer(
+                said, "Não há nada clicável na página aberta — ou nenhuma "
+                "página está aberta ainda. Me diga o que abrir primeiro.",
+                str(shot["url"]), thread, "click", started)
+            return
+
+        n = route_mod.pick(target, rows, shot["png"])    # type: ignore[arg-type]
+        if not n:
+            nomes = ", ".join(str(r["text"])[:28] for r in rows[:6])
+            self._browser_answer(
+                said, f"Não achei **{target}** na página. O que tem lá é: "
+                f"{nomes}… Se for um destes, me diga qual.",
+                str(shot["url"]), thread, "click", started)
+            return
+
+        row = rows[n - 1]
+        try:
+            done = browse.click_candidate(row)
+        except browse.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+        self._browser_answer(
+            said,
+            f"Cliquei em **{row['text']}**.\n\n`{done['url']}`\n\n"
+            + (done.get("title") or "A página abriu."),
+            str(done["url"]), thread, "click", started)
+
+    def _read_page(self, said: str, thread: str) -> None:
+        """Ler a página aberta em voz alta, sem inventar o que não está nela."""
+        started = time.time()
+        try:
+            page = browse.text(limit=4_000)
+        except browse.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+        body = str(page["text"])[:1_400]
+        text = (f"**{page['title']}**\n\n`{page['url']}`\n\n"
+                + (f"```\n{body}\n```" if body
+                   else str(page["empty"]) or "A página veio vazia."))
+        self._browser_answer(said, text, str(page["url"]), thread, "read", started)
 
     def _speak(self) -> None:
         """Sintetiza uma frase e devolve o MP3. Nada é guardado em disco."""

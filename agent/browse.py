@@ -876,6 +876,167 @@ def fields(limit: int = 30) -> dict[str, object]:
     return _run(_impl)
 
 
+def candidates(limit: int = 40) -> dict[str, object]:
+    """O que dá para clicar nesta página, numerado.
+
+    Existe para não voltar ao catálogo de frases. "o primeiro vídeo da lista"
+    não é texto visível em lugar nenhum — nenhum seletor casa com isso, e
+    escrever um seletor por site ("no YouTube o vídeo é a#video-title") seria
+    exatamente a parede de exceções que o Edson mandou derrubar.
+
+    Então a página diz o que oferece, numerado, e quem escolhe é o modelo. Ele
+    é bom em "qual destes é o primeiro vídeo"; eu sou ruim em prever a pergunta.
+
+    A ordem é a do DOM, que na prática é a ordem visual da lista — é o que faz
+    "o primeiro" e "o terceiro" significarem algo.
+    """
+    def _impl() -> dict[str, object]:
+        page = _page()
+        found = page.evaluate(
+            """() => {
+                const out = [];
+                const seen = new Set();
+                const sel = 'a[href], button, [role="button"], [role="link"]';
+                for (const el of document.querySelectorAll(sel)) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 24 || r.height < 12) continue;   // ícone, não alvo
+                    const t = (el.innerText || el.getAttribute('aria-label') || '')
+                              .trim().replace(/\\s+/g, ' ').slice(0, 110);
+                    if (t.length < 2) continue;
+                    const href = el.getAttribute('href') || '';
+                    const key = t + '|' + href;
+                    if (seen.has(key)) continue;                   // o mesmo card duas vezes
+                    seen.add(key);
+                    out.push({ text: t, href: href ? el.href : '', top: Math.round(r.top) });
+                    if (out.length > 200) break;
+                }
+                return out;
+            }""",
+        )
+        rows = found[:limit]
+        for i, row in enumerate(rows):
+            row["n"] = i + 1
+        _record("read", "candidates", f"{len(rows)}", page.url, True)
+        return {"url": page.url, "title": page.title(), "candidates": rows}
+
+    return _run(_impl)
+
+
+def marked_shot(limit: int = 40) -> dict[str, object]:
+    """Uma foto da página com os alvos numerados em cima, mais a lista.
+
+    Isto é o que o Edson pediu ao dizer "dá visão a ele como o co-work do
+    Claude desktop", e é a técnica que os sistemas de uso-de-computador de
+    verdade usam: *set-of-marks*. Em vez de descrever a página em texto e torcer
+    para o modelo imaginar o layout, marca-se cada alvo com um número visível e
+    manda-se a imagem. "O primeiro vídeo da lista" deixa de ser um problema de
+    adivinhação e vira um problema de olhar.
+
+    A lista de texto vai junto, e não é redundância: a imagem diz *qual*, a
+    lista diz *para onde* — o href, que é como o clique acontece sem depender do
+    layout continuar igual.
+
+    As marcas são removidas antes de sair. Uma página deixada com bolinhas
+    amarelas em cima é uma página que o Edson vê e não entende.
+    """
+    def _impl() -> dict[str, object]:
+        page = _page()
+        rows = page.evaluate(
+            """(limit) => {
+                const out = [];
+                const seen = new Set();
+                const sel = 'a[href], button, [role="button"], [role="link"]';
+                const vh = window.innerHeight, vw = window.innerWidth;
+                // Menu, cabeçalho e barra lateral não são conteúdo, e sem isto
+                // eles comem as 40 vagas: no YouTube a lista voltava "Guia,
+                // Limpar consulta, Pesquisar com sua voz, Criar" e nenhum vídeo.
+                // É estrutura de web, não seletor de site — vale em qualquer um.
+                const CHROME = 'nav, header, aside, footer, [role="navigation"],'
+                             + ' [role="banner"], [role="complementary"],'
+                             + ' [role="contentinfo"], [role="search"]';
+                for (const el of document.querySelectorAll(sel)) {
+                    if (el.closest(CHROME)) continue;
+                    const r = el.getBoundingClientRect();
+                    // Só o que está na tela: marcar o que ninguém vê põe número
+                    // na foto sem alvo embaixo, e o modelo escolhe fantasma.
+                    if (r.width < 24 || r.height < 12) continue;
+                    if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue;
+                    const t = (el.innerText || el.getAttribute('aria-label') || '')
+                              .trim().replace(/\\s+/g, ' ').slice(0, 110);
+                    if (t.length < 2) continue;
+                    const href = el.getAttribute('href') || '';
+                    const key = t + '|' + href;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    out.push({ text: t, href: href ? el.href : '',
+                               x: Math.round(r.left), y: Math.round(r.top) });
+                }
+                // Ordem visual, não ordem do DOM. "O primeiro da lista" é uma
+                // afirmação sobre o que se vê em cima, e o DOM não promete isso.
+                out.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+                return out.slice(0, limit);
+            }""",
+            limit,
+        )
+        for i, row in enumerate(rows):
+            row["n"] = i + 1
+
+        page.evaluate(
+            """(rows) => {
+                const box = document.createElement('div');
+                box.id = '__jarvis_marks__';
+                box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+                for (const r of rows) {
+                    const tag = document.createElement('div');
+                    tag.textContent = r.n;
+                    tag.style.cssText =
+                      'position:absolute;left:' + Math.max(0, r.x) + 'px;top:' + Math.max(0, r.y) + 'px;'
+                      + 'background:#ffd400;color:#111;font:700 12px/1.1 monospace;'
+                      + 'padding:2px 4px;border:1px solid #111;border-radius:3px';
+                    box.appendChild(tag);
+                }
+                document.body.appendChild(box);
+            }""",
+            rows,
+        )
+        try:
+            png = page.screenshot(full_page=False)
+        finally:
+            # Sempre, mesmo se o screenshot falhar: as marcas não podem ficar.
+            page.evaluate(
+                "() => document.getElementById('__jarvis_marks__')?.remove()")
+
+        _record("read", "marked", f"{len(rows)}", page.url, True)
+        return {"url": page.url, "title": page.title(),
+                "candidates": rows, "png": png}
+
+    return _run(_impl)
+
+
+def click_candidate(row: dict[str, object]) -> dict[str, object]:
+    """Clica um item devolvido por `candidates()`.
+
+    Prefere navegar pelo href a clicar no elemento: um clique depende de o
+    layout não ter mexido entre listar e clicar, e em página que carrega
+    sozinha (YouTube, Mercado Livre) ele mexe. O href não mexe.
+    """
+    href = str(row.get("href") or "")
+    text = str(row.get("text") or "")
+    if href:
+        kind = classify("goto", href)
+        _gate(kind)
+
+        def _nav() -> dict[str, object]:
+            page = _page()
+            page.goto(href, wait_until="domcontentloaded")
+            _settle(page)
+            _record(kind, "click", text[:60], page.url, True, "via href")
+            return {"clicked": text, "url": page.url, "title": page.title()}
+
+        return _run(_nav)
+    return click(text)
+
+
 def links(limit: int = 40) -> dict[str, object]:
     def _impl() -> dict[str, object]:
         page = _page()
