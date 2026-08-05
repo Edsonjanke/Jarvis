@@ -725,9 +725,17 @@ function renderAnswer(res) {
   cites.appendChild(label);
 
   if (!res.citations.length) {
+    // "Unsourced" used to cover two very different things, and flattening them
+    // was making the warning useless. An answer that says up front "general
+    // knowledge, not in your notes" is doing exactly what it should — warning
+    // about it teaches Edson to ignore the warning. What still deserves the
+    // red line is an answer that cited nothing and did not say why.
+    const general = /conhecimento geral|general knowledge/i.test(res.answer || "");
     const none = document.createElement("span");
-    none.className = "answer-warn";
-    none.textContent = "No note was cited — treat this as unsourced.";
+    none.className = general ? "answer-note" : "answer-warn";
+    none.textContent = general
+      ? "Conhecimento geral, não vem das suas notas — ele avisou."
+      : "Nenhuma nota citada — trate como não verificado.";
     cites.appendChild(none);
   }
 

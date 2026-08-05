@@ -507,6 +507,10 @@ html, body {
   white-space: pre-wrap;      /* the model writes paragraphs and lists */
 }
 .answer-warn { font-size: 11px; color: var(--warn); margin-top: 8px; }
+/* Not a warning. An answer that declares itself general knowledge is behaving
+   correctly, and painting it the same amber as a real problem would train the
+   eye to skip both. Muted: present, checkable, not alarming. */
+.answer-note { font-size: 11px; color: var(--ink-3); margin-top: 8px; }
 
 .cites {
   display: flex;
