@@ -31,3 +31,13 @@ venv/
 .idea/
 Thumbs.db
 desktop.ini
+
+# O zip do design system. A pasta já está versionada descompactada, com os 173
+# arquivos legíveis e diffáveis; o zip seria 2,1 MB da mesma coisa em binário,
+# e um dia os dois divergem sem ninguém notar qual é o verdadeiro.
+/JARVIS Design System.zip
+
+# Saída de teste do `python -m agent.speak`. As amostras que importam — as seis
+# velocidades e as vozes comparadas — estão versionadas porque o LEIA-ME as
+# referencia; esta é só a última frase que eu mandei sintetizar.
+amostras/jarvis-teste.mp3
