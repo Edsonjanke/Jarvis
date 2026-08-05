@@ -1,8 +1,11 @@
 """speak.py — a voz do JARVIS: Antonio, modo jarvis.
 
-O Edson testou as opções e escolheu, e o teste dele está em `LEIA-ME.md`:
-`pt-BR-AntonioNeural` com `--rate=-8% --pitch=-12Hz`, que ele chamou de "modo
-jarvis" — mais grave e mais pausado que o Antonio padrão.
+O Edson testou as opções e escolheu: `pt-BR-AntonioNeural`, tom -12Hz, o que ele
+chamou de "modo jarvis" em `LEIA-ME.md` — mais grave que o Antonio padrão.
+
+A velocidade ele escolheu depois, ouvindo: **+40%**. O teste original era -8%,
+mas isso foi julgar uma frase; ouvindo o assistente responder, o pausado vira
+arrastado. As seis velocidades comparadas estão em `amostras/velocidade_*.mp3`.
 
 ## Por que aqui e não no navegador
 
@@ -41,9 +44,14 @@ if __package__ in (None, ""):
 
 from agent import data as data_mod
 
-# A escolha do Edson, medida por ele. Ver LEIA-ME.md.
+# A escolha do Edson, ouvindo as amostras. Ver LEIA-ME.md e amostras/.
+#
+# O "modo jarvis" que ele documentou era -8%, mais pausado. Ouvindo o JARVIS
+# falar de verdade, ele preferiu +40%: a mesma frase em 12,0s em vez de 18,3s.
+# Faz sentido — a voz grave já dá o peso, e a lentidão em cima disso vira
+# arrastado quando você ouve dez respostas por dia. O tom fica onde estava.
 VOICE = "pt-BR-AntonioNeural"
-RATE = "-8%"
+RATE = "+40%"
 PITCH = "-12Hz"
 
 # Uma resposta longa demais para falar é uma resposta para ler. O corte evita
