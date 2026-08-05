@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-stage="5">
+<html lang="pt-BR" data-stage="5">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -7,24 +7,185 @@
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="data:,">
 </head>
-<body>
+<body data-hud-field>
 
 <!-- Only exists when something is actually broken. Silence means working. -->
 <div id="alerts" class="alerts" role="status" aria-live="polite" hidden></div>
 
-<canvas id="stage" aria-label="Knowledge graph. Use the inspector panel to read notes."></canvas>
+<canvas id="stage" aria-label="Grafo do vault. Use o inspetor para ler uma nota."></canvas>
 
-<!-- ── left: inspector ─────────────────────────────────────────────── -->
-<aside id="inspector" class="panel panel-left" aria-label="Note inspector">
-  <header class="panel-head">
-    <span class="eyebrow">Inspector</span>
-    <button id="clear-focus" class="ghost" type="button" hidden>Close</button>
-  </header>
+<!-- ── left rail ─────────────────────────────────────────────────────── -->
+<aside class="rail rail-left" aria-label="Leituras da máquina">
 
-  <div id="inspector-empty" class="empty">
-    <p>Nothing selected.</p>
-    <p class="muted">Click a node to read it. Shift-click a second to trace the
-      shortest path between them.</p>
+  <!-- Every number in this frame is measured. The design's prototype drifted
+       them ±3.5 every 2.4s; agent/telemetry.py reads the real thing, and what
+       cannot be read (GPU) has no row at all rather than a pretty fake one. -->
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Status do sistema</span>
+      <span class="hud-right" id="sys-where">local</span></header>
+    <div class="hud-body">
+      <ul class="meters" id="meter-list"></ul>
+    </div>
+  </section>
+
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Núcleo de IA</span>
+      <span class="hud-right" id="brain-now"></span></header>
+    <div class="hud-body">
+      <dl class="kv" id="core-kv"></dl>
+      <button id="btn-brain" class="wide" type="button" aria-expanded="false">trocar cérebro</button>
+      <ul id="brain-list" class="brain-list" hidden></ul>
+    </div>
+  </section>
+
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Banco de memória</span>
+      <span class="hud-right" id="mem-now"></span></header>
+    <div class="hud-body mem-row">
+      <svg class="gauge" id="mem-gauge" viewBox="0 0 44 44" aria-hidden="true">
+        <circle class="gauge-track" cx="22" cy="22" r="19"></circle>
+        <circle class="gauge-arc" id="mem-arc" cx="22" cy="22" r="19"></circle>
+        <text class="gauge-num" id="mem-pct" x="22" y="24">—</text>
+      </svg>
+      <dl class="kv" id="mem-kv"></dl>
+    </div>
+  </section>
+
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Rede</span>
+      <span class="hud-right">vault</span></header>
+    <div class="hud-body">
+      <dl class="kv" id="vault-stats"></dl>
+      <div class="filters-head">
+        <span class="hud-sub">tipos</span>
+        <button id="filter-all" class="ghost" type="button">todos</button>
+      </div>
+      <ul id="type-list" class="type-list"></ul>
+    </div>
+  </section>
+
+  <section class="hud hud-foot" data-frame>
+    <header class="hud-rule"><span class="hud-label">Feed ao vivo</span>
+      <span class="hud-right" id="feed-now"></span></header>
+    <div class="hud-body">
+      <ul id="feed-list" class="feed"></ul>
+    </div>
+  </section>
+</aside>
+
+<!-- ── centre stage ──────────────────────────────────────────────────── -->
+<main class="stage" id="centre">
+  <div class="greeting">
+    <span class="greet-mark" aria-hidden="true"><i></i></span>
+    <div>
+      <h1 id="greet-line">JARVIS</h1>
+      <p id="greet-sub">Pergunte qualquer coisa sobre o que está no vault.</p>
+    </div>
+  </div>
+
+  <div class="reactor-wrap" id="reactor-wrap">
+    <canvas id="reactor" width="176" height="176" aria-hidden="true"></canvas>
+    <div class="readout ro-tl"><span class="ro-k">Índice</span><span class="ro-v" id="ro-notes">—</span></div>
+    <div class="readout ro-tr"><span class="ro-k">Cobertura</span><span class="ro-v" id="ro-cover">—</span></div>
+    <div class="readout ro-bl"><span class="ro-k">Vínculos</span><span class="ro-v" id="ro-links">—</span></div>
+    <div class="readout ro-br"><span class="ro-k">Varredura</span><span class="ro-v" id="ro-scan">—</span></div>
+  </div>
+
+  <p class="statusline">
+    <span class="dot" id="status-dot"></span>
+    <span id="reactor-state">sistemas operacionais</span>
+    <span id="reactor-sub" class="reactor-sub"></span>
+  </p>
+
+  <div id="results" class="results plate" hidden></div>
+
+  <div id="attachments" class="attachments" hidden></div>
+
+  <form class="askbar" id="askbar" autocomplete="off">
+    <span class="ask-glyph" aria-hidden="true"></span>
+    <span class="ask-div" aria-hidden="true"></span>
+    <span id="ask-mode" class="ask-mode">ask</span>
+    <input id="ask-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="O que vamos construir hoje?" aria-label="Pergunte ao JARVIS">
+    <span id="ask-hint" class="ask-hint" aria-hidden="true"></span>
+    <button id="ask-send" class="send" type="submit" aria-label="Enviar"></button>
+  </form>
+
+  <span id="thread-bar" class="thread-bar" hidden>
+    <span id="thread-label"></span>
+    <button id="btn-new-thread" class="ghost" type="button">nova conversa</button>
+  </span>
+</main>
+
+<!-- ── right rail ────────────────────────────────────────────────────── -->
+<aside class="rail rail-right" aria-label="Ações e diário">
+
+  <!-- Where the design put CLIMA. Weather is a fixture in the prototype and
+       nothing in this product measures it; the browser journal is real, is
+       new, and is the one readout worth watching after today. -->
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Navegador</span>
+      <span class="hud-right" id="browse-now"></span></header>
+    <div class="hud-body">
+      <ul id="browse-list" class="feed"></ul>
+      <p id="browse-note" class="hud-note"></p>
+    </div>
+  </section>
+
+  <!-- Where the design put TAREFAS AGENDADAS. There is no scheduler, so these
+       four figures are the four the product can actually count. -->
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Contadores</span></header>
+    <div class="hud-body">
+      <ul class="figures" id="figure-list"></ul>
+    </div>
+  </section>
+
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Ações rápidas</span></header>
+    <div class="hud-body">
+      <div class="tiles tiles-5">
+        <button id="btn-mic"     class="tile" type="button" data-stage-min="4"><span>voz</span></button>
+        <button id="btn-wake"    class="tile" type="button" data-stage-min="5" aria-pressed="false"><span>sempre</span></button>
+        <button id="btn-mute"    class="tile" type="button" data-stage-min="4"><span>silêncio</span></button>
+        <button id="btn-reindex" class="tile" type="button"><span>reindexar</span></button>
+        <button id="btn-image"   class="tile" type="button" data-stage-min="5"><span>imagem</span></button>
+        <input id="image-input" type="file" accept="image/*" multiple hidden>
+      </div>
+    </div>
+  </section>
+
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Atalhos</span></header>
+    <div class="hud-body">
+      <div class="tiles tiles-3">
+        <button id="btn-brief"   class="tile" type="button" data-stage-min="3"><span>brief</span></button>
+        <button id="btn-plan"    class="tile" type="button" data-stage-min="3"><span>plano</span></button>
+        <button id="btn-web"     class="tile" type="button" data-stage-min="3"><span>web</span></button>
+        <button id="btn-memory"  class="tile" type="button" data-stage-min="5"><span>memória</span></button>
+        <button id="btn-history" class="tile" type="button" data-stage-min="5"><span>histórico</span></button>
+        <button id="btn-panels"  class="tile" type="button"><span>painéis</span></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="hud hud-foot" data-frame>
+    <header class="hud-rule"><span class="hud-label">Terminal</span>
+      <span class="hud-right" id="term-now"></span></header>
+    <div class="hud-body">
+      <ul id="term-log" class="term"></ul>
+    </div>
+  </section>
+</aside>
+
+<!-- ── overlays: only one open at a time ─────────────────────────────── -->
+<aside id="inspector" class="plate overlay overlay-left" aria-label="Inspetor da nota" hidden>
+  <button id="clear-focus" class="close" type="button" aria-label="Fechar"></button>
+
+  <div id="inspector-empty" class="empty" hidden>
+    <p>Nada selecionado.</p>
+    <p class="muted">Clique num nó para ler. Shift-clique num segundo para traçar
+      o caminho mais curto entre eles.</p>
   </div>
 
   <article id="inspector-note" class="note" hidden>
@@ -34,121 +195,56 @@
     <a id="note-open" class="note-open" target="_blank" rel="noopener noreferrer" hidden></a>
     <ul class="meta-grid" id="note-meta"></ul>
     <div class="note-body" id="note-body"></div>
-    <section class="links">
-      <span class="eyebrow">Links <span id="link-count" class="count"></span></span>
-      <ul id="note-links"></ul>
+    <section class="hud" data-frame>
+      <header class="hud-rule"><span class="hud-label">Vínculos</span>
+        <span class="hud-right"><span id="link-count"></span></span></header>
+      <div class="hud-body"><ul id="note-links"></ul></div>
     </section>
   </article>
 
-  <section id="path-panel" class="path" hidden>
-    <span class="eyebrow">Shortest path</span>
-    <ol id="path-list"></ol>
+  <section id="path-panel" class="hud" data-frame hidden>
+    <header class="hud-rule"><span class="hud-label">Caminho mais curto</span></header>
+    <div class="hud-body"><ol id="path-list"></ol></div>
   </section>
 
-  <section class="hubs">
-    <span class="eyebrow">Top hubs</span>
-    <ol id="hub-list"></ol>
+  <section class="hud" data-frame>
+    <header class="hud-rule"><span class="hud-label">Maiores hubs</span></header>
+    <div class="hud-body"><ol id="hub-list"></ol></div>
   </section>
 </aside>
 
-<!-- ── right: filters + reactor ────────────────────────────────────── -->
-<aside id="sidebar" class="panel panel-right" aria-label="Filters and status">
-  <div class="reactor-wrap">
-    <canvas id="reactor" width="176" height="176" aria-hidden="true"></canvas>
-    <div class="reactor-read">
-      <span id="reactor-state" class="reactor-state">idle</span>
-      <span id="reactor-sub" class="reactor-sub"></span>
+<aside id="sidepanel" class="plate overlay overlay-right" aria-label="Painéis" hidden>
+  <button id="close-panel" class="close" type="button" aria-label="Fechar"></button>
+  <nav class="panel-tabs" id="panel-tabs"></nav>
+
+  <section class="hud" data-frame data-panel="ferramentas" hidden>
+    <header class="hud-rule"><span class="hud-label">Ferramentas</span>
+      <span class="hud-right" id="tool-now"></span></header>
+    <div class="hud-body">
+      <ul id="tool-list" class="brain-list"></ul>
+      <p id="tool-note" class="hud-note"></p>
     </div>
-  </div>
-
-  <section class="filters">
-    <header class="panel-head">
-      <span class="eyebrow">Types</span>
-      <button id="filter-all" class="ghost" type="button">All</button>
-    </header>
-    <ul id="type-list" class="type-list"></ul>
   </section>
 
-  <section class="brain">
-    <header class="panel-head">
-      <span class="eyebrow">Cérebro</span>
-      <span id="brain-now" class="count"></span>
-    </header>
-    <ul id="brain-list" class="brain-list"></ul>
+  <section class="hud" data-frame data-panel="habilidades" hidden>
+    <header class="hud-rule"><span class="hud-label">Habilidades</span>
+      <span class="hud-right" id="skill-now"></span></header>
+    <div class="hud-body">
+      <ul id="skill-list" class="brain-list"></ul>
+      <p id="skill-note" class="hud-note"></p>
+    </div>
   </section>
 
-  <section class="brain" data-stage="5">
-    <header class="panel-head">
-      <span class="eyebrow">Ferramentas</span>
-      <span id="tool-now" class="count"></span>
-    </header>
-    <ul id="tool-list" class="brain-list"></ul>
-    <p id="tool-note" class="tool-note"></p>
-  </section>
-
-  <section class="brain" data-stage="5">
-    <header class="panel-head">
-      <span class="eyebrow">Habilidades</span>
-      <span id="skill-now" class="count"></span>
-    </header>
-    <ul id="skill-list" class="brain-list"></ul>
-    <p id="skill-note" class="tool-note"></p>
-  </section>
-
-  <section class="brain" data-stage="5">
-    <header class="panel-head">
-      <span class="eyebrow">Alterações</span>
-      <span id="edit-now" class="count"></span>
-    </header>
-    <ul id="edit-modes" class="brain-list"></ul>
-    <ul id="edit-list" class="brain-list"></ul>
-    <p id="edit-note" class="tool-note"></p>
-  </section>
-
-  <section class="brain" data-stage="5">
-    <header class="panel-head">
-      <span class="eyebrow">Navegador</span>
-      <span id="browse-now" class="count"></span>
-    </header>
-    <ul id="browse-list" class="brain-list"></ul>
-    <p id="browse-note" class="tool-note"></p>
-  </section>
-
-  <section class="vault-read">
-    <span class="eyebrow">Vault</span>
-    <dl id="vault-stats"></dl>
+  <section class="hud" data-frame data-panel="alteracoes" hidden>
+    <header class="hud-rule"><span class="hud-label">Alterações</span>
+      <span class="hud-right" id="edit-now"></span></header>
+    <div class="hud-body">
+      <ul id="edit-modes" class="brain-list"></ul>
+      <ul id="edit-list" class="brain-list"></ul>
+      <p id="edit-note" class="hud-note"></p>
+    </div>
   </section>
 </aside>
-
-<!-- ── bottom: ask bar ─────────────────────────────────────────────── -->
-<footer id="askbar" class="askbar" aria-label="Ask JARVIS">
-  <div id="attachments" class="attachments" hidden></div>
-  <div class="ask-field">
-    <span id="ask-mode" class="ask-mode">find</span>
-    <input id="ask-input" type="text" autocomplete="off" spellcheck="false"
-           aria-label="Search your files">
-    <span id="ask-hint" class="ask-hint" aria-hidden="true"></span>
-  </div>
-  <div class="ask-actions">
-    <button id="btn-mic"    class="key" type="button" data-stage-min="4">Mic</button>
-    <button id="btn-wake"   class="key" type="button" data-stage-min="5" aria-pressed="false">Sempre</button>
-    <button id="btn-mute"   class="key" type="button" data-stage-min="4">Mute</button>
-    <button id="btn-brief"  class="key" type="button" data-stage-min="3">Brief</button>
-    <button id="btn-plan"   class="key" type="button" data-stage-min="3">Plan</button>
-    <button id="btn-web"    class="key" type="button" data-stage-min="3"
-            title="Busca na web e aterrissa nos seus números">Web</button>
-    <button id="btn-memory" class="key" type="button" data-stage-min="5">Memory</button>
-    <button id="btn-history" class="key" type="button" data-stage-min="5">Histórico</button>
-    <button id="btn-image"  class="key" type="button" data-stage-min="5">Imagem</button>
-    <input id="image-input" type="file" accept="image/*" multiple hidden>
-    <button id="btn-reindex" class="key" type="button">Reindexar</button>
-    <span id="thread-bar" class="thread-bar" hidden>
-      <span id="thread-label"></span>
-      <button id="btn-new-thread" class="ghost" type="button">nova conversa</button>
-    </span>
-  </div>
-  <div id="results" class="results" hidden></div>
-</footer>
 
 <script type="module" src="/app.js"></script>
 </body>

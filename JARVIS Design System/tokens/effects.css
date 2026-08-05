@@ -1,0 +1,23 @@
+/* Effects. There are no drop shadows in this product. Depth comes from
+   translucency + blur over a dark field, and from a lit top border. Glow
+   exists in exactly one place — the canvas, to mark hovered/focused state. */
+
+:root {
+  --blur-panel: blur(20px) saturate(0.85); /* @kind other */
+
+  /* every floating surface uses the same recipe */
+  --panel-border: 1px solid var(--hairline); /* @kind other */
+  --panel-border-top: var(--hairline-up); /* @kind other */
+
+  --dim: 0.1; /* @kind other */  /* everything unrelated drops to this on hover */
+  --dim-filter: 0.36; /* @kind other */  /* a switched-off filter row */
+
+  --glow-hover: 16px; /* @kind other */  /* canvas node shadowBlur, hovered */
+  --glow-focus: 9px; /* @kind other */  /* canvas node shadowBlur, focused */
+  --glow-reactor: 10px; /* @kind other */
+
+  --edge-inset: inset 2px 0 0 var(--accent); /* @kind other */  /* selected brain row */
+  --lift-hover: brightness(1.25); /* @kind other */  /* the one filter used on hover */
+
+  --scrollbar: thin; /* @kind other */
+}

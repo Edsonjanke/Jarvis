@@ -1,0 +1,53 @@
+/* Space. Small, odd numbers on purpose — this is an instrument panel, not a
+   web page, and it is not snapped to a 4/8 grid. Values are the source's. */
+
+:root {
+  --r: 3px;              /* the one radius: everything square-ish */
+  --r-inner: 2px;        /* focus ring, inline mark */
+  --r-pill: 999px;       /* cite chips only */
+
+  --pad: 16px;           /* panel padding */
+  --gutter: 20px;        /* distance from panel to viewport edge */
+
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 14px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 22px;
+
+  /* row rhythm */
+  --row-pad-y: 5px;
+  --row-pad-x: 6px;
+  --row-gap: 9px;
+
+  /* control geometry */
+  --key-pad: 6px 11px;
+  --ghost-pad: 3px 8px;
+  --chip-pad: 4px 10px 4px 7px;
+  --field-h: 46px;
+  --field-pad-x: 14px;
+
+  /* the fixed frame: panels float over the canvas, they do not sit in flow */
+  --panel-left-w: 342px;
+  --panel-right-w: 268px;
+  --panel-bottom: 116px;
+  --askbar-w: 720px;
+  --reactor-size: 176px;
+
+  /* the canvas' visible rectangle, once the floating panels are subtracted */
+  --inset-left: 382px;
+  --inset-right: 308px;
+  --inset-top: 56px;
+  --inset-bottom: 132px;
+
+  --hairline-w: 1px; /* @kind other */
+  --bar-h: 2px;
+  --swatch: 9px;
+
+  --scroll-note: 30vh; /* @kind other */
+  --scroll-results: 40vh; /* @kind other */
+}

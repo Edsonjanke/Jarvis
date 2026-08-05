@@ -1,0 +1,24 @@
+<!-- @dsCard group="Spacing" viewport="700x180" name="The instrument frame" subtitle="v2's panel: a labelled rule with a diagonal cut. Nothing is boxed." -->
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{margin:0;padding:20px 22px;height:180px;background:var(--void);display:grid;grid-template-columns:1fr 1fr;gap:26px;font-family:var(--font-mono)}
+.rule{display:flex;align-items:center;gap:var(--hud-frame-gap)}
+.cap{width:1px;height:var(--hud-cap);background:var(--hud-line)}
+.lbl{font-size:var(--size-tick);letter-spacing:var(--track-eyebrow);text-transform:uppercase;color:var(--text-label);white-space:nowrap}
+.line{flex:1;height:1px;background:var(--hud-line)}
+.line.dim{background:var(--hud-line-dim)}
+.cut{width:var(--hud-cut);height:var(--hud-cut-drop);background:linear-gradient(to bottom right,transparent calc(50% - .5px),var(--hud-line) calc(50% - .5px),var(--hud-line) calc(50% + .5px),transparent calc(50% + .5px))}
+.cut.flip{background:linear-gradient(to bottom left,transparent calc(50% - .5px),var(--hud-line-dim) calc(50% - .5px),var(--hud-line-dim) calc(50% + .5px),transparent calc(50% + .5px))}
+.body{padding:var(--hud-body-pad);font-size:var(--size-tick);color:var(--text-body);line-height:1.7}
+.k{color:var(--text-label);letter-spacing:.08em;text-transform:uppercase}
+.v{color:var(--text-strong);float:right}</style></head>
+<body>
+<section>
+<div class="rule"><span class="cap"></span><span class="lbl">Status do sistema</span><span class="line"></span><span class="lbl" style="letter-spacing:.06em">local</span><span class="cut"></span></div>
+<div class="body"><div><span class="k">cut</span><span class="v">9 × 7px</span></div><div><span class="k">cap</span><span class="v">1 × 6px</span></div><div><span class="k">gap</span><span class="v">9px</span></div></div>
+<div class="rule"><span class="line dim"></span><span class="cut flip"></span></div>
+</section>
+<section>
+<div class="rule"><span class="cap"></span><span class="lbl">Sem rodapé</span><span class="line"></span><span class="cut"></span></div>
+<div class="body">A regra de baixo é opcional e sempre mais fraca: <span style="color:var(--text-strong)">--hud-line-dim</span> contra <span style="color:var(--text-strong)">--hud-line</span> em cima. O corte inverte de lado.</div>
+</section>
+</body></html>

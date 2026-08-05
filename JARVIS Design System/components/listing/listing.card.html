@@ -1,0 +1,45 @@
+<!-- @dsCard group="Components" viewport="700x320" name="Listing" subtitle="Swatch, Row, TypeRow, MetaGrid, StatList, BrainRow" -->
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script><script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script><script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script><script src="../../_ds_bundle.js"></script><style>body{margin:0;height:320px;overflow:hidden}#root{height:320px}.k{font-size:9.5px;color:var(--ink-3);letter-spacing:.04em;font-family:var(--font-mono)}</style></head><body><div id="root"></div><script type="text/babel">
+const NS = window.JARVISDesignSystem_ad8200;
+
+const { Swatch, Row, TypeRow, MetaGrid, StatList, BrainRow, Eyebrow } = NS;
+function Card() {
+  return (
+    <div style={{height:"320px",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"20px",padding:"16px 18px"}}>
+      <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+        <Eyebrow>Links</Eyebrow>
+        <div>
+          <Row type="client" label="Harrow &amp; Vane" tail={9} dir="→" />
+          <Row type="project" label="Checkout rework" tail={4} dir="←" selected />
+          <Row type="invoice" label="Fatura 4471" step={3} />
+        </div>
+        <Eyebrow>Types</Eyebrow>
+        <div>
+          <TypeRow type="project" count={31} share={1} />
+          <TypeRow type="invoice" count={12} share={0.39} on={false} />
+        </div>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+        <Eyebrow>Meta</Eyebrow>
+        <MetaGrid rows={[["links","9"],["size","4.2 kB"],["changed","2026-07-28"],["warning","no text extracted"]]} />
+        <Eyebrow>Vault</Eyebrow>
+        <StatList rows={[["mode","live"],["notes","142"],["links","388"],["model","sonnet-4.6"],["listen","missing"]]} />
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+        <Eyebrow>Cérebro</Eyebrow>
+        <div>
+          <BrainRow name="Sonnet 4.6" note="rápido, o padrão" pressed onClick={() => {}} />
+          <BrainRow name="Opus 4.1" note="mais caro, para relatórios" onClick={() => {}} />
+          <BrainRow name="Google Drive" note="falta GOOGLE_OAUTH_TOKEN" disabled />
+          <BrainRow name="Cobrança" note="⚠ sem description — nunca casa" />
+        </div>
+        <div style={{display:"flex",gap:"8px",alignItems:"center",marginTop:"4px"}}>
+          <Swatch type="client" /><Swatch type="project" /><Swatch type="meeting" /><Swatch type="invoice" />
+          <Swatch type="person" /><Swatch type="note" /><Swatch type="reference" /><Swatch type="other" />
+        </div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<Card />);
+</script></body></html>

@@ -1,0 +1,27 @@
+/* Motion. Nothing bounces, nothing slides, nothing eases in from off-screen.
+   Transitions are short colour crossfades on controls; the only continuous
+   motion in the product is the graph's own breathing and the reactor sweep. */
+
+:root {
+  --t-row: 110ms; /* @kind other */  /* list row hover */
+  --t-control: 120ms; /* @kind other */  /* button colour/border */
+  --t-field: 140ms; /* @kind other */  /* field border on focus-within */
+  --ease: linear; /* @kind other */  /* no curve is specified anywhere in the source */
+
+  --transition-control: color var(--t-control), border-color var(--t-control), background-color var(--t-control); /* @kind other */
+  --transition-row: background-color var(--t-row), color var(--t-row); /* @kind other */
+
+  /* the graph's slow global sway and the idle pulse that walks a link */
+  --breath-period: 11000ms; /* @kind other */
+  --pulse-every: 3400ms; /* @kind other */
+  --pulse-travel: 1500ms; /* @kind other */
+
+  /* the reactor: a slow crawl at idle, a fast sweep when live */
+  --reactor-tick: 33ms; /* @kind other */
+  --reactor-idle-period: 6000ms; /* @kind other */
+  --reactor-live-period: 800ms; /* @kind other */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}

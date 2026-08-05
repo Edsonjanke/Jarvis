@@ -1,0 +1,44 @@
+/* Type. Mono is the interface's voice; the proportional face appears only
+   where the operator's own prose is shown. The machine speaks in mono; the
+   human doesn't. Sizes are the source's exact values — half-pixels included. */
+
+:root {
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Source Sans 3", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: var(--font-mono);
+  --sans: var(--font-sans);
+
+  /* base sizes — the interface runs small and dense on purpose */
+  --size-micro:  9.5px;   /* meta-grid keys, reactor sub, ask mode */
+  --size-tick:   10px;    /* eyebrows, button labels, tails */
+  --size-key:    10.5px;  /* key buttons, reactor state, note path */
+  --size-fine:   11px;    /* meta values, cite chips */
+  --size-row:    11.5px;  /* list rows, alerts */
+  --size-base:   12.5px;  /* body default */
+  --size-input:  13px;    /* ask input */
+  --size-prose:  13.5px;  /* the operator's own writing */
+  --size-title:  19px;    /* note title, the one big thing */
+
+  --lh-tight: 1.25; /* @kind other */
+  --lh-row: 1.5; /* @kind other */
+  --lh-prose: 1.65; /* @kind other */
+
+  --weight-regular: 400; /* @kind other */
+  --weight-strong: 600; /* @kind other */
+
+  /* Tracking carries hierarchy here — uppercase labels are spaced wide,
+     the title is the only thing pulled tight. */
+  --track-title: -0.01em; /* @kind other */
+  --track-name: 0.04em; /* @kind other */
+  --track-label: 0.1em; /* @kind other */
+  --track-eyebrow: 0.17em; /* @kind other */
+  --track-mode: 0.18em; /* @kind other */
+  --track-state: 0.24em; /* @kind other */
+
+  /* semantic roles */
+  --type-eyebrow: var(--weight-regular) var(--size-tick) / 1.2 var(--font-mono);
+  --type-body:    var(--weight-regular) var(--size-base) / var(--lh-row) var(--font-mono);
+  --type-prose:   var(--weight-regular) var(--size-prose) / var(--lh-prose) var(--font-sans);
+  --type-title:   var(--weight-strong) var(--size-title) / var(--lh-tight) var(--font-sans);
+  --numeral-table: tabular-nums; /* @kind other */
+}

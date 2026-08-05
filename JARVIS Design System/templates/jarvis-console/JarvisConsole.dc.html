@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="JARVIS console" description="The instrument-panel shell: alert strip, inspector, status panel, ask bar." -->
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="position:fixed;inset:0;background:#050908;color:#cdf3de;font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;font-size:12.5px;overflow:hidden">
+
+<div style="position:fixed;z-index:8;top:0;left:0;right:0">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Alert" level="warn" label="Voz" hint-size="100%,34px">falta ELEVENLABS_API_KEY — ouvir está desligado; falar continua nesta máquina.</x-import>
+</div>
+
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Panel" side="left" hint-size="342px,80%">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.PanelHead" label="Inspector" hint-size="100%,28px"></x-import>
+<div style="display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:0.17em;text-transform:uppercase;color:#97a0ac"><span style="width:9px;height:9px;border-radius:50%;background:#cf7777"></span>client</div>
+<h1 style="font-family:'Segoe UI Variable Text','Segoe UI','Source Sans 3',system-ui,sans-serif;font-size:19px;font-weight:600;line-height:1.25;letter-spacing:-0.01em;color:#dfe4ea;margin:10px 0 6px">Harrow &amp; Vane</h1>
+<p style="margin:0 0 14px;font-size:10.5px;color:#5f6874;word-break:break-all">demo/clients/harrow-vane.md</p>
+<ul style="list-style:none;margin:0 0 14px;padding:12px 0;border-top:1px solid rgba(255,255,255,0.075);border-bottom:1px solid rgba(255,255,255,0.075);display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:11px">
+<li style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">links</li><li style="color:#97a0ac">9</li>
+<li style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">trade</li><li style="color:#97a0ac">furniture retail</li>
+<li style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">changed</li><li style="color:#97a0ac">2026-07-28</li>
+</ul>
+<div style="font-family:'Segoe UI Variable Text','Segoe UI','Source Sans 3',system-ui,sans-serif;font-size:13.5px;line-height:1.65;color:#97a0ac;margin-bottom:16px">Two projects live, one care plan. Paid on time twice, late once. The deposit for the storefront rebuild has still not landed.</div>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Eyebrow" count="(3)" hint-size="100%,14px">Links</x-import>
+<div style="margin-top:10px">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Row" type="project" label="Storefront rebuild" dir="→" tail="6" hint-size="100%,24px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Row" type="invoice" label="Fatura 4471" dir="→" tail="2" hint-size="100%,24px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Row" type="person" label="Aisha Rahman" dir="←" tail="1" hint-size="100%,24px"></x-import>
+</div>
+<div style="margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.075)">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Eyebrow" hint-size="100%,14px">Top hubs</x-import>
+<div style="margin-top:10px">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Row" type="note" label="Operating principles" tail="11" hint-size="100%,24px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Row" type="note" label="Money map" tail="7" hint-size="100%,24px"></x-import>
+</div>
+</div>
+</x-import>
+
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Panel" side="right" hint-size="268px,80%">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.ReactorDial" state="idle" sub="" hint-size="176px,198px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.PanelHead" label="Types" hint-size="100%,28px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.TypeRow" type="project" count="8" share="1" hint-size="100%,34px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.TypeRow" type="client" count="6" share="0.75" hint-size="100%,34px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.TypeRow" type="invoice" count="5" share="0.62" hint-size="100%,34px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.TypeRow" type="note" count="10" share="0.9" hint-size="100%,34px"></x-import>
+<div style="margin-top:22px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.075)">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Eyebrow" hint-size="100%,14px">Vault</x-import>
+<dl style="display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:10px 0 0;font-size:10.5px">
+<dt style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">notes</dt><dd style="margin:0;color:#97a0ac;text-align:right;font-variant-numeric:tabular-nums">44</dd>
+<dt style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">links</dt><dd style="margin:0;color:#97a0ac;text-align:right;font-variant-numeric:tabular-nums">52</dd>
+<dt style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">model</dt><dd style="margin:0;color:#97a0ac;text-align:right">sonnet-4.6</dd>
+<dt style="color:#5f6874;text-transform:uppercase;letter-spacing:0.1em;font-size:9.5px">listen</dt><dd style="margin:0;color:#fab219;text-align:right">missing</dd>
+</dl>
+</div>
+</x-import>
+
+<footer style="position:fixed;z-index:4;bottom:20px;left:50%;transform:translateX(-50%);width:min(720px,calc(100vw - 40px));display:flex;flex-direction:column;gap:10px">
+<div style="order:-1;background:rgba(20,23,28,0.86);backdrop-filter:blur(20px) saturate(0.85);border:1px solid rgba(255,255,255,0.075);border-radius:3px;padding:8px">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.AnswerBlock" kind="ask" meta="sonnet-4.6 · read 14 notes · 2 remembered · 4.1s" body="Metade na assinatura, metade na entrega. O depósito é o que compra a vaga na agenda — sem ele o projeto é uma conversa e a agenda continua aberta." hint-size="100%,150px">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Eyebrow" hint-size="70px,14px">Sources</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Cite" type="note" title="Deposit policy" hint-size="150px,24px"></x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Cite" type="client" title="Harrow &amp; Vane" hint-size="150px,24px"></x-import>
+</x-import>
+</div>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.AskField" mode="ask" value="{{ query }}" onChange="{{ setQuery }}" placeholder="Client health board" hint-size="100%,46px"></x-import>
+<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="60px,28px">Mic</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="70px,28px">Sempre</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="60px,28px">Mute</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="60px,28px">Brief</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="60px,28px">Plan</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="80px,28px">Histórico</x-import>
+<x-import component-from-global-scope="JARVISDesignSystem_ad8200.Button" size="key" hint-size="85px,28px">Reindexar</x-import>
+</div>
+</footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { query: "" };
+  renderVals() {
+    return {
+      query: this.state.query,
+      setQuery: (v) => this.setState({ query: v }),
+    };
+  }
+}
+
+</script>
+</body>
+</html>

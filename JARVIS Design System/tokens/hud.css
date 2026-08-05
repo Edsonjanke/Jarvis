@@ -1,0 +1,48 @@
+/* HUD — v2 only. The bracketed frame, the phosphor field and the tile grid.
+
+   v1 drew a panel as a translucent plate with a hairline on all four sides.
+   v2 draws it as an instrument frame: a labelled rule across the top whose
+   right end cuts away on a diagonal, and an optional matching rule below.
+   Nothing is boxed. The plate underneath is the same recipe as v1. */
+
+:root {
+  /* frame geometry */
+  --hud-rule: 1px;
+  --hud-cut: 9px;          /* width of the diagonal that ends a rule */
+  --hud-cut-drop: 7px;     /* how far that diagonal falls */
+  --hud-cap: 6px;          /* the vertical tick that opens a rule */
+  --hud-frame-gap: 9px;    /* label to rule */
+  --hud-body-pad: 9px 0 0; /* frame label to frame body */
+
+  /* frame colour */
+  --hud-line:     rgba(var(--accent-rgb), 0.30); /* @kind other */
+  --hud-line-dim: rgba(var(--accent-rgb), 0.13); /* @kind other */
+
+  /* the field behind everything */
+  --hud-grid: rgba(var(--accent-rgb), 0.035); /* @kind other */
+  --hud-grid-size: 46px;
+  --hud-scan: rgba(var(--accent-rgb), 0.022); /* @kind other */
+  --hud-scan-size: 3px;
+  --hud-vignette: radial-gradient(120% 90% at 50% 46%, rgba(var(--accent-rgb), 0.055) 0%, rgba(var(--accent-rgb), 0.018) 42%, transparent 74%); /* @kind other */
+
+  /* phosphor. Text glow is the one decoration v2 adds; it is reserved for
+     live numbers and the reactor, never for labels or prose. */
+  --hud-glow:      0 0 9px rgba(var(--accent-rgb), 0.42); /* @kind other */
+  --hud-glow-soft: 0 0 6px rgba(var(--accent-rgb), 0.22); /* @kind other */
+
+  /* rails and tiles */
+  --rail-w: 286px;
+  --rail-gutter: 16px;
+  --rail-gap: 14px;
+  --tile-h: 44px;
+  --tile-gap: 5px;
+  --meter-label-w: 30px;
+  --meter-h: 4px;
+  --meter-seg: 3px;        /* segment width in a segmented bar */
+  --gauge-stroke: 3px;
+
+  /* the central stage */
+  --reactor-v2: 420px;
+  --ask-w: 640px;
+  --ask-h: 46px;
+}

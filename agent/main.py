@@ -28,7 +28,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent import (brain, browse, data as data_mod, edit, embed, llm, memory,
-                   notebook, route as route_mod, skills, speak, tools, voice, web)
+                   notebook, route as route_mod, skills, speak, telemetry, tools,
+                   voice, web)
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -1145,6 +1146,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/speak":
             self._json(speak.state())
+            return
+
+        if route == "/api/telemetry":
+            # Medido, não simulado. O protótipo do design fazia estes números
+            # oscilarem ±3,5 a cada 2,4s; aqui um valor que não pôde ser lido
+            # volta None e a tela mostra "—". Ver agent/telemetry.py.
+            self._json(telemetry.state())
             return
 
         if route == "/api/history":

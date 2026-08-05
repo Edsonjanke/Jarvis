@@ -92,6 +92,7 @@ async function boot() {
   renderEdits();
   renderBrowse();
   renderVaultStats();
+  renderHud();                    // v2: greeting, readouts, meters, feed
   rotateExamples();
   applyStageGating();
 }
@@ -477,20 +478,30 @@ async function switchBrain(brain, btn) {
   renderVaultStats();
 }
 
+// Notes nothing links to. The number worth watching in a vault: an orphan is
+// a note the graph cannot reach, so search may find it and thinking never will.
+function orphanCount() {
+  const linked = new Set();
+  for (const e of state.graph?.edges || []) {
+    linked.add(e.source ?? e.a);
+    linked.add(e.target ?? e.b);
+  }
+  return (state.graph?.nodes || []).filter((n) => !linked.has(n.id)).length;
+}
+
 function renderVaultStats() {
   const dl = $("vault-stats");
   dl.replaceChildren();
   const h = state.health;
+  // Vault only. Model, listen and speak moved to NÚCLEO DE IA in v2, and
+  // printing them twice made the left rail read like two panels arguing.
   const rows = [
-    ["mode", h.demo ? "demo" : "live"],
-    ["notes", String(h.notes)],
-    ["links", String(state.graph.edges.length)],
-    ["indexed in", `${state.graph.build_seconds}s`],
-    ["model", h.model.available ? h.model.name : "missing"],
-    ["listen", h.voice.listen.available ? h.voice.listen.model : "missing"],
-    ["speak", h.voice.speak?.engine === "edge-tts"
-      ? `${h.voice.speak.voice} ${h.voice.speak.rate}/${h.voice.speak.pitch}`
-      : window.speechSynthesis ? "this machine" : "missing"],
+    ["modo", h.demo ? "demo" : "live"],
+    ["notas", String(h.notes)],
+    ["vínculos", String(state.graph.edges.length)],
+    ["órfãs", String(orphanCount())],
+    ["indexado em", `${state.graph.build_seconds}s`],
+    ["escuta", h.voice.listen.available ? h.voice.listen.model : "missing"],
   ];
   for (const [key, value] of rows) {
     const dt = document.createElement("dt");
@@ -1618,6 +1629,10 @@ async function renderBrowse(payload) {
   }
   if (data.error) { alert("warn", "Navegador", data.error); return; }
   state.browse = data;
+  // The feed in the left rail reads the same journal, and renderHud() runs
+  // before this fetch lands — without this it said "quieto" on a page whose
+  // journal had twenty lines in it.
+  if (typeof renderFeed === "function") { renderFeed(); renderFigures(); }
 
   const now = $("browse-now");
   if (now) {
@@ -2122,3 +2137,310 @@ window.jarvis = { graph, state, setReactor, openNote, tracePath };
 
 setReactor("idle");
 boot();
+
+// ── HUD v2 ────────────────────────────────────────────────────────────────
+//
+// The rails, the reactor readouts and the terminal. Everything here reads a
+// real number or shows an em dash; nothing drifts to look alive.
+//
+// That is a deliberate departure from the design bundle, and the one place
+// this implementation disagrees with its own spec. The prototype's STATUS DO
+// SISTEMA drifts its four meters ±3.5 every 2400ms, and CLIMA and TAREFAS
+// AGENDADAS are fixtures. Putting invented figures on Edson's screen is the
+// exact failure the whole product refuses — and it breaks the design's own
+// third rule, "say what is missing, never what is fine". A meter that swings
+// without measuring says everything is fine without having looked.
+//
+// So: CPU, RAM and disk are measured (agent/telemetry.py, stdlib only), GPU
+// has no row because nothing can read it, CLIMA became the browser journal
+// and TAREFAS AGENDADAS became the four things this product can actually
+// count.
+
+const HUD_EVERY = 4000;           // meters refresh; slow, it is not a game
+
+function greetWord(hour) {
+  if (hour < 5)  return "boa madrugada";
+  if (hour < 12) return "bom dia";
+  if (hour < 18) return "boa tarde";
+  return "boa noite";
+}
+
+function setMeters(t) {
+  const list = $("meter-list");
+  if (!list) return;
+  const rows = [["cpu", t.cpu], ["ram", t.ram], ["disco", t.disk]];
+  list.replaceChildren();
+  for (const [name, row] of rows) {
+    const pct = row?.pct;
+    const li = document.createElement("li");
+    li.className = "meter";
+    // Three tones, and "none" is a real one: no reading is not zero percent.
+    li.dataset.tone = pct == null ? "none" : pct >= 88 ? "warn" : "ok";
+
+    const k = document.createElement("span");
+    k.className = "meter-k";
+    k.textContent = name;
+
+    const bar = document.createElement("span");
+    bar.className = "meter-bar";
+    bar.style.setProperty("--fill", pct == null ? "0%" : pct + "%");
+
+    const v = document.createElement("span");
+    v.className = "meter-v";
+    v.textContent = pct == null ? "—" : pct + "%";
+    if (row?.note) v.title = row.note;
+
+    li.append(k, bar, v);
+    list.appendChild(li);
+  }
+  const where = $("sys-where");
+  if (where) where.textContent = t.uptime?.label ? t.uptime.label + " no ar" : "local";
+}
+
+function kvRow(dl, key, value, cls) {
+  const dt = document.createElement("dt");
+  dt.textContent = key;
+  const dd = document.createElement("dd");
+  dd.textContent = value;
+  if (cls) dd.className = cls;
+  dl.append(dt, dd);
+}
+
+function renderCore() {
+  const dl = $("core-kv");
+  if (!dl) return;
+  const h = state.health || {};
+  dl.replaceChildren();
+  kvRow(dl, "modelo", h.model?.name || "—", h.model?.available ? "lit" : "off");
+  kvRow(dl, "modo", state.lastKind || "ask");
+  kvRow(dl, "resposta", state.lastSeconds ? state.lastSeconds.toFixed(1) + "s" : "—",
+        state.lastSeconds ? "" : "off");
+  kvRow(dl, "voz", h.voice?.speak?.engine === "edge-tts"
+        ? (h.voice.speak.voice || "").replace("pt-BR-", "").replace("Neural", "")
+        : "navegador");
+}
+
+function renderMemoryBank() {
+  const h = state.health || {};
+  const facts = h.memory?.facts ?? 0;
+  const limit = h.memory?.limit || 1;
+  const pct = Math.round((facts / limit) * 100);
+
+  const arc = $("mem-arc");
+  if (arc) arc.style.strokeDashoffset = String(119.4 * (1 - pct / 100));
+  const num = $("mem-pct");
+  if (num) num.textContent = pct + "%";
+  const now = $("mem-now");
+  if (now) now.textContent = facts + "/" + limit;
+
+  const dl = $("mem-kv");
+  if (!dl) return;
+  dl.replaceChildren();
+  kvRow(dl, "fatos", String(facts));
+  kvRow(dl, "teto", String(limit));
+  kvRow(dl, "semântica", h.semantic?.available ? (h.semantic.model || "on") : "off",
+        h.semantic?.available ? "lit" : "off");
+}
+
+function renderReadouts() {
+  const g = state.graph || {};
+  const nodes = g.nodes?.length || 0;
+  const edges = g.edges?.length || 0;
+  const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  set("ro-notes", String(nodes));
+  set("ro-links", String(edges));
+  // Cobertura: quantos nós têm ao menos um vínculo. É medido, e é a pergunta
+  // que importa num vault — nota sem vínculo é poeira solta.
+  const linked = new Set();
+  for (const e of g.edges || []) { linked.add(e.source ?? e.a); linked.add(e.target ?? e.b); }
+  set("ro-cover", nodes ? Math.round((linked.size / nodes) * 100) + "%" : "—");
+  set("ro-scan", state.graph?.build_seconds != null
+                 ? state.graph.build_seconds.toFixed(2) + "s" : "—");
+}
+
+function renderFigures() {
+  const list = $("figure-list");
+  if (!list) return;
+  const h = state.health || {};
+  const problems = h.problems?.length ?? 0;
+  const rows = [
+    [state.graph?.nodes?.length || 0, "notas", ""],
+    [h.edit?.changes ?? 0, "alterações", ""],
+    [state.browse?.actions ?? 0, "ações", ""],
+    [problems, "problemas", problems ? "crit" : "off"],
+  ];
+  list.replaceChildren();
+  for (const [n, cap, tone] of rows) {
+    const li = document.createElement("li");
+    const fig = document.createElement("span");
+    fig.className = "fig";
+    if (tone) fig.dataset.tone = tone;
+    fig.textContent = String(n);
+    const c = document.createElement("span");
+    c.className = "cap";
+    c.textContent = cap;
+    li.append(fig, c);
+    list.appendChild(li);
+  }
+}
+
+// The live feed and the terminal are the same events seen two ways: the feed
+// is what happened, the terminal is what the server said. Both are real lines
+// from the browser journal and the edit journal — never decoration.
+const termLines = [];
+
+function termLog(level, text) {
+  const now = new Date().toTimeString().slice(0, 8);
+  termLines.push({ now, level, text });
+  while (termLines.length > 40) termLines.shift();
+  const list = $("term-log");
+  if (!list) return;
+  list.replaceChildren();
+  for (const row of termLines.slice(-12)) {
+    const li = document.createElement("li");
+    const w = document.createElement("span");
+    w.className = "when";
+    w.textContent = "[" + row.now + "]";
+    const l = document.createElement("span");
+    l.className = "lvl";
+    l.dataset.lvl = row.level;
+    l.textContent = row.level;
+    const t = document.createElement("span");
+    t.className = "what";
+    t.textContent = row.text;
+    t.title = row.text;
+    li.append(w, l, t);
+    list.appendChild(li);
+  }
+  list.scrollTop = list.scrollHeight;
+}
+
+function renderFeed() {
+  const list = $("feed-list");
+  if (!list) return;
+  const rows = [];
+  for (const act of (state.browse?.recent || []).slice(-4).reverse()) {
+    rows.push({
+      when: new Date(act.when * 1000).toTimeString().slice(0, 5),
+      what: act.what + " " + act.target,
+      tail: act.ok ? (act.kind === "spend" ? "GASTO" : act.kind) : "falhou",
+      tone: !act.ok ? "warn" : act.kind === "spend" ? "crit" : "",
+    });
+  }
+  for (const change of (state.edit?.changes || []).slice(0, 3)) {
+    rows.push({
+      when: new Date(change.when * 1000).toTimeString().slice(0, 5),
+      what: (change.path || "").split(/[\\/]/).pop(),
+      tail: change.undone ? "desfeito" : change.action,
+      tone: change.undone ? "" : "accent",
+    });
+  }
+  rows.sort((a, b) => (a.when < b.when ? 1 : -1));
+
+  list.replaceChildren();
+  for (const row of rows.slice(0, 5)) {
+    const li = document.createElement("li");
+    const w = document.createElement("span");
+    w.className = "when";
+    w.textContent = row.when;
+    const t = document.createElement("span");
+    t.className = "what";
+    t.textContent = row.what;
+    t.title = row.what;
+    const tail = document.createElement("span");
+    tail.className = "tail";
+    if (row.tone) tail.dataset.tone = row.tone;
+    tail.textContent = row.tail;
+    li.append(w, t, tail);
+    list.appendChild(li);
+  }
+  const now = $("feed-now");
+  if (now) now.textContent = rows.length ? String(rows.length) : "quieto";
+}
+
+async function pollTelemetry() {
+  try {
+    setMeters(await fetch("/api/telemetry").then((r) => r.json()));
+  } catch {
+    // Offline is already shouted about by boot(); a dead meter says "—".
+    setMeters({});
+  }
+}
+
+function renderHud() {
+  const h = state.health || {};
+  const line = $("greet-line");
+  if (line) line.textContent = greetWord(new Date().getHours()) + ", Edson";
+  const sub = $("greet-sub");
+  if (sub) {
+    sub.textContent = h.notes
+      ? "Pergunte qualquer coisa sobre as " + h.notes + " notas do vault."
+      : "Nada indexado ainda.";
+  }
+  renderCore();
+  renderMemoryBank();
+  renderReadouts();
+  renderFigures();
+  renderFeed();
+  pollTelemetry();
+  termLog("SYS", "índice aberto — " + (h.notes ?? 0) + " notas, "
+                 + (state.graph?.edges?.length ?? 0) + " vínculos");
+  if (h.model?.available) termLog("OK", "cérebro: " + h.model.name);
+  else termLog("ERR", h.model?.reason || "sem modelo");
+}
+
+setInterval(pollTelemetry, HUD_EVERY);
+
+// ── HUD wiring ────────────────────────────────────────────────────────────
+
+// The ask bar is a <form> now, so Enter would reload the page. The keydown
+// handler further up already sends the question; this only stops navigation.
+$("askbar")?.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const value = $("ask-input").value;
+  if (STAGE >= 3 && value.trim()) think("ask", { q: value }, value);
+});
+$("ask-input")?.addEventListener("input", () => {
+  $("askbar").dataset.filled = $("ask-input").value.trim() ? "1" : "0";
+});
+
+$("btn-brain")?.addEventListener("click", () => {
+  const list = $("brain-list");
+  const open = list.hidden;
+  list.hidden = !open;
+  $("btn-brain").setAttribute("aria-expanded", String(open));
+});
+
+// One overlay at a time. Opening a panel clears the note and vice versa —
+// they are pinned to the same band and would collide below ~1270px.
+function openPanel(name) {
+  const panel = $("sidepanel");
+  if (!panel) return;
+  $("inspector").hidden = true;
+  panel.hidden = false;
+  for (const section of panel.querySelectorAll("[data-panel]")) {
+    section.hidden = section.dataset.panel !== name;
+  }
+  for (const tab of panel.querySelectorAll(".panel-tabs .ghost")) {
+    tab.setAttribute("aria-pressed", String(tab.dataset.go === name));
+  }
+}
+
+(function buildTabs() {
+  const tabs = $("panel-tabs");
+  if (!tabs) return;
+  for (const pair of [["ferramentas", "ferramentas"],
+                      ["habilidades", "habilidades"],
+                      ["alteracoes", "alterações"]]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ghost";
+    btn.dataset.go = pair[0];
+    btn.textContent = pair[1];
+    btn.addEventListener("click", () => openPanel(pair[0]));
+    tabs.appendChild(btn);
+  }
+})();
+
+$("btn-panels")?.addEventListener("click", () => openPanel("ferramentas"));
+$("close-panel")?.addEventListener("click", () => { $("sidepanel").hidden = true; });

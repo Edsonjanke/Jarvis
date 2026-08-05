@@ -1,0 +1,87 @@
+/* Colour — v2, phosphor. Two rules still govern everything here:
+   luminance says "look here", hue says "what it is".
+   The single accent carries STATE only — focus, traced path, active reactor.
+   The seven node colours carry TAXONOMY and are never reused as state.
+
+   v2 changed the accent from #93b4ff to phosphor green and gave every
+   neutral a green cast, so the whole field reads as one lit instrument.
+   Surfaces, ink and hairlines are now tinted with the accent's hue; the
+   taxonomy set is unchanged (it was searched, not chosen). */
+
+:root {
+  /* ── base: surfaces ─────────────────────────────────────────────── */
+  --void:        #050908;
+  --surface:     rgba(8, 17, 13, 0.74);
+  --surface-2:   rgba(11, 23, 18, 0.86);
+  --hairline:    rgba(120, 255, 190, 0.10);
+  --hairline-up: rgba(120, 255, 190, 0.20);
+  --wash:        rgba(120, 255, 190, 0.055);
+  --wash-2:      rgba(120, 255, 190, 0.08);
+  --plate:       rgba(4, 9, 7, 0.74);
+
+  /* ── base: ink ──────────────────────────────────────────────────── */
+  --ink:   #cdf3de;
+  --ink-2: #7fb99a;
+  --ink-3: #4d7a64;
+
+  /* ── base: the one accent ───────────────────────────────────────── */
+  --accent:      #3ce88f;
+  --accent-soft: rgba(60, 232, 143, 0.14);
+  --accent-line: rgba(60, 232, 143, 0.40);
+  --accent-rgb: 60, 232, 143; /* @kind other */
+  --accent-deep: #0d3a26;   /* the accent laid down at panel weight */
+
+  /* ── base: status. Reserved, never reused as a category ─────────── */
+  --warn: #fab219;
+  --crit: #ff5a52;
+  --good: #3ce88f;
+
+  /* Alert plates — a tinted bed, not a filled banner */
+  --alert-warn-bg: #161206;
+  --alert-warn-fg: #f0d9a8;
+  --alert-crit-bg: #1a0c0b;
+  --alert-crit-fg: #ffc4c0;
+  --alert-info-bg: #07140f;
+  --alert-info-fg: #a8dcc1;
+
+  /* ── base: node types ────────────────────────────────────────────
+     Searched in OKLCH for the lowest-chroma set that still clears the
+     all-pairs gates on this exact surface, then validated: worst all-pairs
+     CVD ΔE 9.5 (protan), normal-vision ΔE 15.3, all ≥ 3:1 against --void.
+     Do not hand-edit. Re-run the search and the validator instead. */
+  --t-client:    #cf7777;
+  --t-project:   #1c63b0;
+  --t-meeting:   #7f5605;
+  --t-invoice:   #618b09;
+  --t-person:    #954c76;
+  --t-note:      #18a6b5;
+  --t-reference: #7f7ee4;
+  --t-other:     #7c848f;
+
+  /* ── semantic aliases ───────────────────────────────────────────── */
+  --bg-app:        var(--void);
+  --surface-panel: var(--surface);
+  --surface-raised: var(--surface-2);
+  --surface-hover: var(--wash);
+  --border-hairline: var(--hairline);
+  --border-lit:      var(--hairline-up);
+
+  --text-strong: var(--ink);
+  --text-body:   var(--ink-2);
+  --text-muted:  var(--ink-3);
+  --text-label:  var(--ink-3);
+  --text-state:  var(--accent);
+
+  --control-fg:         var(--ink-2);
+  --control-border:     var(--hairline);
+  --control-fg-active:  var(--accent);
+  --control-bg-active:  var(--accent-soft);
+  --control-border-active: var(--accent-line);
+  --control-fg-disabled: var(--ink-3);
+  --control-border-disabled: rgba(120, 255, 190, 0.07);
+
+  --focus-ring: var(--accent);
+  --edge-lit:   var(--accent-line);
+  --mark-bg:    var(--accent-soft);
+  --mark-fg:    var(--accent);
+}

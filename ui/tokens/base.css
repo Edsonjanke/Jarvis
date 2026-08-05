@@ -1,0 +1,51 @@
+/* Base. What the product itself sets on the document, so anything built on
+   this system starts on the same dark field with the same voice. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--size-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { filter: var(--lift-hover); }
+
+::selection { background: var(--accent-soft); color: var(--accent); }
+
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--r-inner);
+}
+
+/* Scroll lives inside panels, never on the page. */
+[data-scroll] {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: var(--scrollbar);
+  scrollbar-color: var(--ink-3) transparent;
+}
+
+/* v2. The terminal caret, and the phosphor field itself: a faint grid, a
+   scanline and a centre bloom, all painted on ::before/::after of the app
+   shell so no element in the tree has to carry them. */
+@keyframes hud-caret { 0%, 55% { opacity: .8 } 56%, 100% { opacity: .12 } }
+
+[data-hud-field] { position: relative; background: var(--bg-app); }
+[data-hud-field]::before,
+[data-hud-field]::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
+[data-hud-field]::before {
+  background:
+    linear-gradient(var(--hud-grid) 1px, transparent 1px) 0 0 / 100% var(--hud-grid-size),
+    linear-gradient(90deg, var(--hud-grid) 1px, transparent 1px) 0 0 / var(--hud-grid-size) 100%,
+    var(--hud-vignette);
+}
+[data-hud-field]::after {
+  background: repeating-linear-gradient(180deg, var(--hud-scan) 0 1px, transparent 1px var(--hud-scan-size));
+}

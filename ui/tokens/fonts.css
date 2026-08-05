@@ -1,0 +1,43 @@
+/* O @import do Google Fonts foi removido de propósito.
+ *
+ * JARVIS roda em localhost e não faz pedido para fora sem motivo. Uma fonte
+ * remota é um pedido a cada carregamento, é um terceiro sabendo quando a
+ * página abriu, e é a página em branco quando a internet cai — para ganhar o
+ * quê, numa máquina Windows que já tem Segoe UI instalada?
+ *
+ * O próprio token abaixo previa isso: "Segoe UI é mantida um passo atrás para
+ * máquinas Windows caírem em algo familiar". A máquina do Edson é Windows.
+ * Ela cai em Segoe UI, localmente, e o desenho não muda.
+ *
+ * Cascadia Code, que é a voz da máquina e onde a diferença apareceria, está
+ * em assets/fonts/ neste repositório — essa não depende de rede.
+ */
+
+/* Cascadia Code — Microsoft, SIL OFL 1.1. The real face from the source stack.
+   Variable weight 200–700. The source prefers "Cascadia Mono" (same design,
+   ligatures off) when it is installed locally; this is the web fallback. */
+@font-face {
+  font-family: "Cascadia Code";
+  src: url("../assets/fonts/CascadiaCode.ttf") format("truetype-variations");
+  font-weight: 200 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* "Cascadia Mono" is the same typeface with ligatures switched off, and ships
+   only as a desktop font. The web build below is the same Microsoft binary
+   under that family name, so the first entry in --font-mono resolves. */
+@font-face {
+  font-family: "Cascadia Mono";
+  src: url("../assets/fonts/CascadiaCode.ttf") format("truetype-variations");
+  font-weight: 200 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* SUBSTITUTION, now permanent. The source's prose face is "Segoe UI Variable
+   Text", which is proprietary, ships with Windows and has no webfont. On the
+   operator's instruction the token no longer names it: --font-sans leads with
+   Source Sans 3 (Google Fonts, OFL) — humanist, low contrast, open apertures,
+   close in colour on a dark field. "Segoe UI" is kept one step behind so
+   Windows machines still land somewhere familiar. */
