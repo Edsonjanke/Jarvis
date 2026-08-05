@@ -64,6 +64,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote_plus
 
 if __package__ in (None, ""):  # allow `python agent/browse.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -181,14 +182,8 @@ SITES = {
 }
 
 
-def intent(text: str) -> str | None:
-    """O que o Edson mandou abrir, ou None se não foi um comando de abrir.
-
-    Devolve URL quando dá para resolver com certeza, ou o termo cru quando é um
-    nome que ninguém conhece — nesse caso quem chama deve **buscar**, nunca
-    montar `https://www.<palavra>.com`. Chutar domínio é inventar, e inventar é
-    a única coisa que este assistente não tem licença para fazer.
-    """
+def _dewake(text: str) -> str:
+    """A frase sem o vocativo que o microfone cola na frente."""
     said = text or ""
     # Duas vezes no máximo: o microfone repete o acordo ("Jarvis? Jarvis, ..."),
     # mas um laço sem teto deixaria "jarvis jarvis jarvis" comer a frase inteira.
@@ -197,8 +192,72 @@ def intent(text: str) -> str | None:
         if stripped == said:
             break
         said = stripped
+    return said
 
-    match = OPEN_RE.match(said)
+
+# "pesquisar playlist de rock no youtube" — buscar **dentro** de um site.
+#
+# Diferente de abrir. `abre o youtube` põe a home na tela; isto põe o resultado.
+# O verbo abre a frase pelo mesmo motivo de sempre, e o site vem no fim, depois
+# de "no"/"na"/"em".
+SEARCH_RE = re.compile(
+    r"^\s*(?:pesquis\w*|busc\w*|procur\w*|search|acha[r]?)\s+(?:por\s+)?"
+    r"(.+?)\s+(?:n[oa]s?|em|dentro\s+d[eoa]|no\s+site\s+d[eoa])\s+"
+    r"([\w .\-]{2,40}?)\s*[.!?]?\s*$",
+    re.I,
+)
+
+# Endereço de busca de cada site, quando ele é conhecido.
+#
+# Montar a URL é muito mais confiável do que dirigir a caixa de busca na tela:
+# não depende de rótulo, de layout nem de banner de cookie na frente. Estes são
+# endereços públicos e estáveis, não chutes — onde eu não souber, o código cai
+# para preencher o campo de busca da própria página.
+SEARCH_URLS = {
+    "https://www.youtube.com": "https://www.youtube.com/results?search_query={q}",
+    "https://www.google.com": "https://www.google.com/search?q={q}",
+    "https://www.mercadolivre.com.br": "https://lista.mercadolivre.com.br/{q}",
+    "https://github.com": "https://github.com/search?q={q}",
+    "https://mail.google.com": "https://mail.google.com/mail/u/0/#search/{q}",
+    "https://drive.google.com": "https://drive.google.com/drive/search?q={q}",
+    "https://www.linkedin.com": "https://www.linkedin.com/search/results/all/?keywords={q}",
+}
+
+
+def search_intent(text: str) -> tuple[str, str, str] | None:
+    """(url de busca, site, termo) — ou None se não foi pedido de busca em site.
+
+    Devolve url vazia quando o site é conhecido mas não tem endereço de busca
+    mapeado: nesse caso quem chama abre o site e usa a caixa de busca dele, que
+    é mais frágil e por isso é o segundo caminho, não o primeiro.
+    """
+    match = SEARCH_RE.match(_dewake(text))
+    if not match:
+        return None
+    query = match.group(1).strip().strip("\"'“”")
+    where = match.group(2).strip().lower().rstrip(".")
+
+    site = SITES.get(where) or SITES.get(re.sub(r"\s+", "", where))
+    if not site:
+        if URLISH_RE.match(where):
+            site = where if where.startswith("http") else f"https://{where}"
+        else:
+            return None          # não é um site que eu conheça: não é este caminho
+
+    template = SEARCH_URLS.get(site.rstrip("/"), "")
+    url = template.format(q=quote_plus(query)) if template else ""
+    return url, site, query
+
+
+def intent(text: str) -> str | None:
+    """O que o Edson mandou abrir, ou None se não foi um comando de abrir.
+
+    Devolve URL quando dá para resolver com certeza, ou o termo cru quando é um
+    nome que ninguém conhece — nesse caso quem chama deve **buscar**, nunca
+    montar `https://www.<palavra>.com`. Chutar domínio é inventar, e inventar é
+    a única coisa que este assistente não tem licença para fazer.
+    """
+    match = OPEN_RE.match(_dewake(text))
     if not match:
         return None
     what = match.group(1).strip().strip("\"'“”")
@@ -628,6 +687,59 @@ def fetch(url: str, *, limit: int = PAGE_CHARS) -> dict[str, object]:
             "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "chars": len(body), "truncated": truncated, "empty": empty,
             "text": body[:limit] + ("\n[truncado]" if truncated else ""),
+        }
+
+    return _run(_impl)
+
+
+def search_site(site: str, query: str, *, limit: int = 3_000) -> dict[str, object]:
+    """Buscar dentro de um site e devolver a página de resultados.
+
+    Dois caminhos, e a ordem importa. Com endereço de busca conhecido, monta a
+    URL e vai direto: não depende de rótulo de campo, de layout nem de banner de
+    cookie na frente. Sem ele, abre o site e usa a caixa de busca da própria
+    página — mais frágil, por isso segundo.
+    """
+    template = SEARCH_URLS.get(site.rstrip("/"), "")
+    if template:
+        page = fetch(template.format(q=quote_plus(query)), limit=limit)
+        page["how"] = "endereço de busca"
+        page["query"] = query
+        return page
+
+    def _impl() -> dict[str, object]:
+        pg = _page()
+        pg.goto(site, wait_until="domcontentloaded")
+        _settle(pg)
+        # A caixa de busca, procurada pelos nomes que os sites de fato usam.
+        box = None
+        for how in ('input[type="search"]', '[role="searchbox"]',
+                    'input[name="q"]', 'input[name="query"]',
+                    'input[name="busca"]', 'input[name="search"]',
+                    'input[placeholder*="usca" i]', 'input[placeholder*="earch" i]'):
+            found = pg.locator(how).first
+            try:
+                if found.count() and found.is_visible():
+                    box = found
+                    break
+            except Exception:  # noqa: BLE001 — seletor que não casa é normal
+                continue
+        if box is None:
+            _record("send", "search", query, pg.url, False, "sem caixa de busca")
+            raise Refused(
+                f"abri {site} mas não achei a caixa de busca dele. A janela está "
+                "aberta — busque aí, ou me dê o endereço do resultado.")
+        box.fill(query)
+        box.press("Enter")
+        _settle(pg)
+        body = _clean(pg.inner_text("body"))
+        _record("send", "search", query, pg.url, True, f"{len(body)} chars")
+        return {
+            "url": pg.url, "title": pg.title(), "query": query,
+            "how": "caixa de busca da página",
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "chars": len(body), "truncated": len(body) > limit, "empty": "",
+            "text": body[:limit] + ("\n[truncado]" if len(body) > limit else ""),
         }
 
     return _run(_impl)

@@ -28,7 +28,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent import (brain, browse, data as data_mod, edit, embed, llm, memory,
-                   notebook, skills, tools, voice, web)
+                   notebook, route as route_mod, skills, speak, tools, voice, web)
 from agent.vault import Vault
 
 # A question is a question, not a payload. Anything larger is a mistake or an
@@ -163,7 +163,13 @@ def capabilities() -> dict[str, object]:
                 "model": voice.model_name() if voice.available() else None,
                 "reason": voice.reason(),
             },
-            "speak": {"available": True, "engine": "browser"},
+            # Falar deixou de ser sempre local. Antonio (edge-tts) soa muito
+            # melhor e é a escolha do Edson, mas manda o texto para a Microsoft.
+            # Reportado aqui para a página poder dizer isso em vez de esconder.
+            "speak": ({"available": True, "engine": "edge-tts", **speak.state()}
+                      if speak.available()[0]
+                      else {"available": True, "engine": "browser", "local": True,
+                            "reason": speak.available()[1]}),
             "language": data_mod.language() or None,
         },
         "memory": {
@@ -431,6 +437,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/browse":
                 self._browse()
                 return
+            if route == "/api/speak":
+                self._speak()
+                return
             self._fail(HTTPStatus.NOT_FOUND, f"no route for POST {route}")
         except BrokenPipeError:
             pass
@@ -468,11 +477,23 @@ class Handler(BaseHTTPRequestHandler):
         # you tube" com o botão Web apertado, e a pesquisa foi buscar rodapé
         # institucional do YouTube em vez de abrir o site. Quem manda abrir não
         # está pedindo pesquisa, qualquer que seja o botão.
+        # Quem lê a frase é o modelo, não uma lista de frases minhas.
+        #
+        # Isto corrige um erro de desenho. Eu vinha pondo uma regex por pedido —
+        # "abre o X", depois "pesquisa Y no X" — e cada teste do Edson achava uma
+        # frase que eu não tinha previsto. Ele resumiu: "parece a Alexa já".
+        # Estava certo: catálogo de frases é parede de exceções.
+        #
+        # O caminho rápido continua: imperativo óbvio nem chama o modelo. Ver
+        # `route.decide`.
         if route in ("/api/ask", "/api/research"):
             spoken = str(body.get("q") or "")
-            target = browse.intent(spoken)
-            if target:
-                self._open_site(spoken, target, thread)
+            plan = route_mod.decide(spoken)
+            if plan["tool"] == "open":
+                self._open_site(spoken, plan["site"], thread)
+                return
+            if plan["tool"] == "search":
+                self._search_site(spoken, plan["site"], plan["query"], thread)
                 return
 
         try:
@@ -726,6 +747,73 @@ class Handler(BaseHTTPRequestHandler):
         STORE.rebuild()
         self._json({"ok": True, "change": change.to_dict(), **edit.state()})
 
+    def _speak(self) -> None:
+        """Sintetiza uma frase e devolve o MP3. Nada é guardado em disco."""
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        try:
+            audio = speak.say(str(body.get("text") or ""))
+        except speak.SpeechFailed as exc:
+            # 503 e não 500: a página cai para a voz do navegador quando isto
+            # falha, e precisa distinguir "indisponível" de "quebrado".
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Length", str(len(audio)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(audio)
+
+    def _search_site(self, said: str, site: str, query: str, thread: str) -> None:
+        """Buscar dentro de um site, e mostrar o que veio.
+
+        O site pode chegar como nome ("youtube") ou endereço. Nome desconhecido
+        não vira domínio chutado: cai na busca da web, como em `_open_site`.
+        """
+        started = time.time()
+        resolved = browse.SITES.get(site.lower().strip()) or (
+            site if site.lower().startswith("http") else "")
+        if not resolved:
+            # Não conheço o site: procurar "<termo> <site>" na web é honesto e
+            # útil, e não finge que abriu um lugar que eu não sei qual é.
+            self._open_site(said, f"{query} {site}".strip(), thread)
+            return
+
+        try:
+            page = browse.search_site(resolved, query)
+        except browse.Refused as exc:
+            self._fail(HTTPStatus.FORBIDDEN, str(exc))
+            return
+
+        head = "\n".join(
+            line for line in str(page["text"]).splitlines()[:14] if line.strip())
+        lines = [
+            f"Busquei **{query}** em {web.domain_of(resolved)}.",
+            f"`{page['url']}`",
+        ]
+        if page["chars"]:
+            # O conteúdo da página é DADO. Vai cercado, e o que ele diz não é
+            # ordem — um resultado de busca que peça algo é texto a relatar.
+            lines.append(f"Começo do que veio:\n\n```\n{head[:900]}\n```")
+        else:
+            lines.append("A página abriu vazia — pode exigir login. A janela "
+                         "está aberta.")
+
+        answer = brain.Answer(
+            kind="browse", question=said, text="\n\n".join(lines),
+            citations=[], considered=[], recalled=[],
+            usage={"tool": "search_site", "url": page["url"],
+                   "how": page.get("how", "")},
+            seconds=round(time.time() - started, 3),
+        )
+        turn = notebook.record(answer, thread)
+        self._json({**answer.to_dict(), "turn": turn.id, "thread": turn.thread})
+
     def _open_site(self, said: str, target: str, thread: str) -> None:
         """Abrir um site porque foi mandado, e dizer o que abriu.
 
@@ -955,6 +1043,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/browse":
             self._json(browse.state())
+            return
+
+        if route == "/api/speak":
+            self._json(speak.state())
             return
 
         if route == "/api/history":

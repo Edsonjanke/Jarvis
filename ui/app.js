@@ -488,7 +488,9 @@ function renderVaultStats() {
     ["indexed in", `${state.graph.build_seconds}s`],
     ["model", h.model.available ? h.model.name : "missing"],
     ["listen", h.voice.listen.available ? h.voice.listen.model : "missing"],
-    ["speak", window.speechSynthesis ? "this machine" : "missing"],
+    ["speak", h.voice.speak?.engine === "edge-tts"
+      ? `${h.voice.speak.voice} ${h.voice.speak.rate}/${h.voice.speak.pitch}`
+      : window.speechSynthesis ? "this machine" : "missing"],
   ];
   for (const [key, value] of rows) {
     const dt = document.createElement("dt");
@@ -850,15 +852,81 @@ function speechVoice() {
       || null;
 }
 
+// The line JARVIS actually reads aloud. Citation ids are for the eye.
+function speakable(text) {
+  return text.replace(/\[[^\]\n]{3,120}\]/g, "").replace(/[*_#`]/g, "")
+             .replace(/\s+/g, " ").trim();
+}
+
+// Antonio, "modo jarvis" — pt-BR-AntonioNeural at -8% rate, -12Hz pitch.
+//
+// Edson picked it by listening to the samples in amostras/, and it is a real
+// step up from the voices Windows ships. The cost is that the sentence leaves
+// the machine: edge-tts synthesises on Microsoft's servers, and what JARVIS
+// says out loud is his vault read back. The browser voice below stays as the
+// fallback, and it is the local one — JARVIS_SPEAK=0 makes it the only one.
+let jarvisAudio = null;
+
+// "Is JARVIS talking right now?" — asked by always-on listening so the mic does
+// not record his own voice and answer himself. It has to know about both
+// engines: with only the speechSynthesis check, Antonio spoke and the mic
+// listened straight through him.
+function isSpeaking() {
+  return Boolean(window.speechSynthesis?.speaking)
+      || Boolean(jarvisAudio && !jarvisAudio.paused && !jarvisAudio.ended);
+}
+
+async function speakAntonio(text) {
+  const res = await fetch("/api/speak", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+
+  stopSpeaking();
+  const url = URL.createObjectURL(await res.blob());
+  const audio = new Audio(url);
+  jarvisAudio = audio;
+  state.level = 0.5;
+  setReactor("speaking", state.health?.voice?.speak?.voice || "Antonio");
+  // Revoked on every exit path: a blob per answer, never freed, is a leak that
+  // only shows up after an hour of talking.
+  const done = () => {
+    URL.revokeObjectURL(url);
+    if (jarvisAudio === audio) jarvisAudio = null;
+    state.level = 0;
+    setReactor("idle");
+  };
+  audio.onended = done;
+  audio.onerror = done;
+  await audio.play();
+}
+
 function speak(text) {
-  if (VOICE.mute || !window.speechSynthesis || !text) return;
+  if (VOICE.mute || !text) return;
+  const line = speakable(text);
+  if (!line) return;
+
+  if (state.health?.voice?.speak?.engine === "edge-tts") {
+    // Falling back is not failing quietly: the local voice still says the
+    // sentence, and the reason lands in the alert strip so a dead network
+    // never turns into a JARVIS that simply stopped talking.
+    speakAntonio(line).catch((err) => {
+      alert("warn", "Voz", `Antonio indisponível (${err}); falando com a voz local.`);
+      speakLocal(line);
+    });
+    return;
+  }
+  speakLocal(line);
+}
+
+function speakLocal(text) {
+  if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
 
   const utterance = new SpeechSynthesisUtterance(
-    // Citation ids are for the eye, not the ear: "demo/notes/deposit-policy.md"
-    // read aloud is unbearable. The chips below the answer carry them.
-    text.replace(/\[[^\]\n]{3,120}\]/g, "").replace(/[*_#`]/g, "").replace(/\s+/g, " ").trim()
-  );
+    text);   // already cleaned by speakable()
   const voice = speechVoice();
   if (voice) { utterance.voice = voice; utterance.lang = voice.lang; }
 
@@ -869,6 +937,9 @@ function speak(text) {
 
 function stopSpeaking() {
   window.speechSynthesis?.cancel();
+  // Both engines, always. Muting while Antonio is mid-sentence has to stop
+  // Antonio, not just the voice that happens to be the default today.
+  if (jarvisAudio) { jarvisAudio.pause(); jarvisAudio = null; }
   if (state.reactor === "speaking") { state.level = 0; setReactor("idle"); }
 }
 
@@ -1057,7 +1128,7 @@ async function sendSegment(rec, blocks) {
   // think() resolves when the text lands; the answer is still being read out
   // loud after that. Going straight back to "listening" here would wipe the
   // speaking indicator off the reactor mid-sentence.
-  if (VOICE.recording === rec && !window.speechSynthesis?.speaking) {
+  if (VOICE.recording === rec && !isSpeaking()) {
     setReactor("listening", `diga "${VOICE.wakeWord}"`);
   }
 }
@@ -1108,7 +1179,7 @@ async function startListening(always = false) {
         // It must not hear itself. Its own answer coming out of the speakers
         // contains the word "jarvis" often enough, and one reply triggering
         // the next is a loop with your subscription on the other end.
-        if (window.speechSynthesis?.speaking || VOICE.busy || thinking) {
+        if (isSpeaking() || VOICE.busy || thinking) {
           rec.vad = freshVad();       // and recalibrate, the room just changed
           state.level = 0;
           return;
