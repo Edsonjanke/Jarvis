@@ -252,6 +252,34 @@ def test_page_text_can_never_command() -> list[bool]:
     ]
 
 
+def test_site_label_is_for_the_ear() -> list[bool]:
+    """O olho recebe o endereço, o ouvido recebe o nome.
+
+    Existe porque a fala lia a URL inteira: "agá tê tê pê ês dois pontos barra
+    barra dábliu dábliu dábliu ponto youtube ponto com barra results
+    interrogação search underline query igual rock". A URL continua na tela.
+    """
+    print("\nnome do site para falar")
+    out = []
+    for url, want in [
+        ("https://www.youtube.com", "YouTube"),
+        ("https://github.com", "GitHub"),
+        ("https://www.linkedin.com", "LinkedIn"),
+        ("https://app.contaazul.com", "Conta Azul"),
+        ("https://www.mercadolivre.com.br", "Mercado Livre"),
+        ("https://mail.google.com", "Gmail"),
+        # Site que não está na lista: o domínio, sem www e sem .com.br.
+        ("https://www.equimatec.com.br/produtos", "Equimatec"),
+    ]:
+        out.append(_check(f"{url}", browse.site_label(url), want))
+    # `.title()` cru estragaria estes, e o erro é audível.
+    out.append(_check("nenhum vira 'Youtube'/'Github'",
+                      {browse.site_label("https://www.youtube.com"),
+                       browse.site_label("https://github.com")},
+                      {"YouTube", "GitHub"}))
+    return out
+
+
 def test_state_reports_the_policy() -> list[bool]:
     print("\nstate() conta a política em voz alta")
     state = browse.state()
@@ -276,7 +304,8 @@ def main() -> int:
                  test_send_and_spend_actually_pass, test_journal_round_trips,
                  test_fill_value_never_reaches_the_journal,
                  test_page_content_is_data, test_intent_only_fires_on_a_command,
-                 test_page_text_can_never_command, test_state_reports_the_policy):
+                 test_page_text_can_never_command, test_site_label_is_for_the_ear,
+                 test_state_reports_the_policy):
         results.extend(test())
 
     bad = results.count(False)

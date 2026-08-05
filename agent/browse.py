@@ -224,6 +224,35 @@ SEARCH_URLS = {
 }
 
 
+# Grafias que `.title()` estraga.
+SPOKEN = {
+    "youtube": "YouTube", "github": "GitHub", "linkedin": "LinkedIn",
+    "chatgpt": "ChatGPT", "whatsapp": "WhatsApp", "whatsapp web": "WhatsApp",
+    "contaazul": "Conta Azul", "mercadolivre": "Mercado Livre",
+    "gmail": "Gmail", "notion": "Notion", "drive": "Google Drive",
+    "google drive": "Google Drive", "mail": "Gmail", "app": "Conta Azul",
+    "calendario": "Agenda", "calendário": "Agenda", "calendar": "Agenda",
+    "lista": "Mercado Livre",
+}
+
+
+def site_label(url: str) -> str:
+    """O nome do site como se fala, não como se digita.
+
+    "YouTube", não "www.youtube.com". A regra é que endereço é para o olho e
+    prosa é para o ouvido: a URL fica na tela, dentro de crase, e a frase falada
+    carrega o nome. Ler um domínio em voz alta letra por letra é ruído.
+    """
+    base = (url or "").rstrip("/")
+    for name, known in SITES.items():
+        if known.rstrip("/") == base:
+            # `.title()` quebra o maiúsculo do meio: "Youtube", "Github".
+            # Estes têm grafia própria e ela é lida em voz alta.
+            return SPOKEN.get(name, name.title())
+    host = re.sub(r"^https?://(?:www\.)?", "", base).split("/")[0]
+    return SPOKEN.get(host.split(".")[0], host.split(".")[0].title()) or host
+
+
 def search_intent(text: str) -> tuple[str, str, str] | None:
     """(url de busca, site, termo) — ou None se não foi pedido de busca em site.
 

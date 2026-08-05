@@ -793,13 +793,18 @@ class Handler(BaseHTTPRequestHandler):
         head = "\n".join(
             line for line in str(page["text"]).splitlines()[:14] if line.strip())
         lines = [
-            f"Busquei **{query}** em {web.domain_of(resolved)}.",
+            f"Busquei **{query}** no {browse.site_label(resolved)}.",
             f"`{page['url']}`",
         ]
         if page["chars"]:
+            # A frase antes da cerca tem de se sustentar sozinha, porque a fala
+            # não recebe a cerca: "Começo do que veio:" lido em voz alta deixava
+            # o JARVIS pendurado numa frase sem fim.
+            #
             # O conteúdo da página é DADO. Vai cercado, e o que ele diz não é
             # ordem — um resultado de busca que peça algo é texto a relatar.
-            lines.append(f"Começo do que veio:\n\n```\n{head[:900]}\n```")
+            lines.append("Os primeiros resultados estão na tela."
+                         f"\n\n```\n{head[:900]}\n```")
         else:
             lines.append("A página abriu vazia — pode exigir login. A janela "
                          "está aberta.")
@@ -851,7 +856,16 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(HTTPStatus.FORBIDDEN, str(exc))
             return
 
-        lines = [f"Abri **{page['title'] or url}**.", f"`{page['url']}`"]
+        # O título da página vai para a tela; a frase falada usa o nome
+        # curto do site, porque título de página lido em voz alta é ladainha
+        # ("GitHub · A mudança é constante. O GitHub mantém você à frente...").
+        label = browse.site_label(page["url"])
+        title = str(page["title"] or "")
+        # O título só entra se acrescentar. "Abri YouTube — YouTube" é o que sai
+        # quando o site se chama como a página, e no ouvido soa como gagueira.
+        extra = title if title and label.lower() not in title.lower()[:40] else ""
+        lines = [f"Abri **{label}**" + (f" — {extra}" if extra else "") + ".",
+                 f"`{page['url']}`"]
         if note:
             lines.insert(0, note)
         # Barra final não é redirect. Avisar sobre ela treina você a ignorar o
@@ -863,7 +877,9 @@ class Handler(BaseHTTPRequestHandler):
             lines.append(page["empty"] + " A janela está aberta; se precisar de "
                          "login, faça na hora e me diga para ler de novo.")
         else:
-            lines.append(f"{page['chars']} chars de texto na página.")
+            # "4049 chars de texto na página" é informação de programador, e no
+            # ouvido é ruído. O que interessa saber é que carregou.
+            lines.append("A página carregou.")
 
         answer = brain.Answer(
             kind="browse",

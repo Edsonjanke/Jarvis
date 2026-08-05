@@ -852,10 +852,28 @@ function speechVoice() {
       || null;
 }
 
-// The line JARVIS actually reads aloud. Citation ids are for the eye.
+// The line JARVIS actually reads aloud.
+//
+// The rule: **the eye gets addresses, the ear gets prose.** It was already here
+// for citation ids — "demo/notes/deposit-policy.md" read aloud is unbearable —
+// and the browser broke it, because every answer about a page carries its URL.
+// "agá tê tê pê ês dois pontos barra barra dábliu dábliu dábliu ponto youtube
+// ponto com barra results interrogação search underline query igual rock" is
+// forty seconds of noise for something the screen already shows.
+//
+// So three things never reach the voice: fenced blocks (a dump of page text),
+// code spans holding an address or a path, and bare URLs. Everything stays on
+// screen — nothing is hidden, only unspoken.
 function speakable(text) {
-  return text.replace(/\[[^\]\n]{3,120}\]/g, "").replace(/[*_#`]/g, "")
-             .replace(/\s+/g, " ").trim();
+  return text
+    .replace(/```[\s\S]*?```/g, " ")                    // page dumps
+    .replace(/`[^`\n]*(?:https?:\/\/|www\.|\/)[^`\n]*`/g, " ")   // addresses, paths
+    .replace(/\[[^\]\n]{3,120}\]/g, " ")                // citation ids
+    .replace(/https?:\/\/\S+|\bwww\.\S+/g, " ")         // bare URLs
+    .replace(/[*_#`]/g, "")
+    .replace(/\s+([.,;:!?])/g, "$1")                    // no " ." where a URL was
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // Antonio, "modo jarvis" — pt-BR-AntonioNeural at -8% rate, -12Hz pitch.
